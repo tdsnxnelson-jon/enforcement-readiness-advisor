@@ -323,8 +323,8 @@ def _render_decisions_table(data: Dict) -> str:
                 <div class="pager-row">
                     <label class="pager-label" for="decision-page-size">Rows per page</label>
                     <select id="decision-page-size" class="pager-select" onchange="setDecisionPageSize(this.value)">
-                        <option value="10">10</option>
-                        <option value="25" selected>25</option>
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
                         <option value="50">50</option>
                         <option value="100">100</option>
                     </select>
@@ -412,8 +412,19 @@ def _render_rule_suggestions(data: Dict) -> str:
     </section>"""
     
     # Build rows for the suggestions table
+    # Collect distinct rule types for filter pills
+    rule_types = sorted({c.get('rule_type', '') for c in candidates if c.get('rule_type')})
+    type_counts = {rt: sum(1 for c in candidates if c.get('rule_type') == rt) for rt in rule_types}
+    total = len(candidates)
+
+    pills = "".join(
+        f'<button class="rule-filter-pill" data-rule-type="{_e(rt)}" onclick="filterRules(\'{_e(rt)}\')">'
+        f'{_e(rt)}: <strong>{type_counts[rt]}</strong></button>'
+        for rt in rule_types
+    )
+
     rows = "".join(f"""
-        <tr>
+        <tr data-rule-type="{_e(c.get('rule_type', ''))}">
             <td>{_e(c.get('rule_type', ''))}</td>
             <td>{_e(c.get('rule_name', ''))}</td>
             <td>{_e(c.get('process_pattern', ''))}</td>
@@ -421,16 +432,14 @@ def _render_rule_suggestions(data: Dict) -> str:
             <td>{_e(c.get('operation', ''))}</td>
             <td>{_badge(c.get('action', 'Approve').title(), 'info')}</td>
             <td>{int(c.get('confidence', 0) * 100)}%</td>
-            <td>{_e(c.get('source_event_count', 0))} events</td>
-            <td><span class="expand-btn" onclick="toggleSafetyChecks(this)">+</span></td>
+            <td>{_e(c.get('source_event_count', 0))} files</td>
+            <td><button class="expand-btn" onclick="toggleSafetyChecks(this)">+</button></td>
         </tr>
         <tr class="safety-checks-row" style="display: none;">
             <td colspan="9">
                 <div class="safety-checks">
                     <strong>Safety Checks:</strong>
-                    <ul>
-                        {"".join(f"<li>{_e(check)}</li>" for check in c.get('safety_checks', []))}
-                    </ul>
+                    <ul>{"".join(f"<li>{_e(check)}</li>" for check in c.get('safety_checks', []))}</ul>
                     <strong>Rationale:</strong>
                     <p>{_e(c.get('rationale', ''))}</p>
                     <strong>Expected Impact:</strong>
@@ -438,14 +447,35 @@ def _render_rule_suggestions(data: Dict) -> str:
                 </div>
             </td>
         </tr>""" for c in candidates)
-    
+
     return f"""
     <section>
         <h2>Recommended Rules for Unapproved Files
             <button class="toggle-btn" onclick="toggle('rules-detail')">Show detail &#9660;</button>
         </h2>
-        <p>These rules are derived from kernel discovery events and file approval patterns. Use them to approve recurring unapproved files.</p>
+        <p>{total:,} rule recommendations derived from unapproved file patterns. Sorted by files covered (highest first).</p>
         <div id="rules-detail" class="collapsible">
+            <div class="filter-bar">
+                <button class="rule-filter-pill active" data-rule-type="ALL" onclick="filterRules('ALL')">All: <strong>{total}</strong></button>
+                {pills}
+            </div>
+            <div class="table-toolbar">
+                <div class="search-row">
+                    <input id="rules-search" class="search-input" type="search" placeholder="Search rule name, file pattern, process..." oninput="searchRules(this.value)">
+                </div>
+                <div class="pager-row">
+                    <label class="pager-label" for="rules-page-size">Rows per page</label>
+                    <select id="rules-page-size" class="pager-select" onchange="setRulesPageSize(this.value)">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                    <button id="rules-prev-top" class="pager-button" onclick="previousRulesPage()">Previous</button>
+                    <button id="rules-next-top" class="pager-button" onclick="nextRulesPage()">Next</button>
+                    <span id="rules-pager-top" class="pager-info"></span>
+                </div>
+            </div>
             <div class="table-wrap">
                 <table id="rules-table">
                     <thead>
@@ -457,12 +487,19 @@ def _render_rule_suggestions(data: Dict) -> str:
                             <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">Operation <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Action <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('rules-table', 6, 'number')">Confidence <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Events <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Files <span class="sort-indicator"></span></th>
                             <th style="width: 50px;">Details</th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
                 </table>
+            </div>
+            <div class="table-toolbar table-toolbar-bottom">
+                <div class="pager-row pager-row-bottom">
+                    <button id="rules-prev-bottom" class="pager-button" onclick="previousRulesPage()">Previous</button>
+                    <button id="rules-next-bottom" class="pager-button" onclick="nextRulesPage()">Next</button>
+                    <span id="rules-pager-bottom" class="pager-info"></span>
+                </div>
             </div>
         </div>
     </section>"""
@@ -636,7 +673,7 @@ _JS = """
 var currentDecisionFilter = 'ALL';
 var currentDecisionSearch = '';
 var currentDecisionPage = 1;
-var currentDecisionPageSize = 25;
+var currentDecisionPageSize = 10;
 var tableSortState = {};
 
 function toggle(id) {
@@ -828,7 +865,7 @@ document.addEventListener('DOMContentLoaded', function() {
 var currentRulesFilter = 'ALL';
 var currentRulesSearch = '';
 var currentRulesPage = 1;
-var currentRulesPageSize = 25;
+var currentRulesPageSize = 10;
 
 function filterRules(ruleType) {
     currentRulesFilter = ruleType;
