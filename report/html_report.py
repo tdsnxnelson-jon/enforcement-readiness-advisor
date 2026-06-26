@@ -917,13 +917,16 @@ function applyRulesTableState(resetPage) {
     if (!table) return;
     if (resetPage === true) currentRulesPage = 1;
 
-    // Hide all data rows and their expansion siblings
+    // Get all data rows and safety rows for index matching
     var allDataRows = Array.from(document.querySelectorAll('#rules-table tbody tr:not(.safety-checks-row)'));
-    allDataRows.forEach(function(row) {
+    var allSafetyRows = Array.from(document.querySelectorAll('#rules-table tbody tr.safety-checks-row'));
+    
+    // Hide all data rows
+    allDataRows.forEach(function(row, index) {
         row.style.display = 'none';
-        var next = row.nextElementSibling;
-        if (next && next.classList.contains('safety-checks-row')) {
-            next.style.display = 'none';
+        // Hide corresponding safety row by index (keep its toggle state, just hide it)
+        if (allSafetyRows[index]) {
+            allSafetyRows[index].style.display = 'none';
         }
     });
 
@@ -934,7 +937,12 @@ function applyRulesTableState(resetPage) {
     var start = (currentRulesPage - 1) * currentRulesPageSize;
     filtered.slice(start, start + currentRulesPageSize).forEach(function(row) {
         row.style.display = '';
-        // Keep expansion row in whatever open/closed state the user left it
+        // Find this row's index and restore its expansion state
+        var rowIndex = allDataRows.indexOf(row);
+        if (rowIndex >= 0 && allSafetyRows[rowIndex]) {
+            // Keep expansion row in whatever open/closed state the user left it
+            // (don't change its display here, just restore it based on what the user set)
+        }
     });
 
     var infoText = filtered.length === 0
@@ -969,8 +977,8 @@ function toggleSafetyChecks(btn) {
         var safetyRow = allSafetyRows[dataRowIndex];
         
         if (safetyRow) {
-            if (safetyRow.style.display === 'none') {
-                safetyRow.style.display = '';
+            if (safetyRow.style.display === 'none' || getComputedStyle(safetyRow).display === 'none') {
+                safetyRow.style.display = 'table-row';
                 btn.textContent = '-';
             } else {
                 safetyRow.style.display = 'none';
