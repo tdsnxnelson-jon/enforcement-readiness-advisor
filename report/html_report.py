@@ -203,7 +203,7 @@ def _render_llm_section(data: Dict) -> str:
     source_note = {
         "llm":         "",
         "fallback":    '<div class="banner banner-info">&#8505; AI narrative was unavailable; this summary was generated automatically from collected signals.</div>',
-        "unavailable": '<div class="banner banner-info">&#8505; Local AI service was not running. Start Ollama and re-run to include an AI-generated narrative.</div>',
+        "unavailable": '<div class="banner banner-info">&#8505; Configured Ollama service was not reachable. Start the service or correct the endpoint and re-run to include an AI-generated narrative.</div>',
     }.get(source, "")
 
     def _list(items: List[str]) -> str:
@@ -398,6 +398,76 @@ def _render_candidates(data: Dict) -> str:
     </section>"""
 
 
+def _render_rule_suggestions(data: Dict) -> str:
+    """Render rule suggestions to approve unapproved files."""
+    rule_sugg = data.get("approval_workflow", {}).get("rule_suggestions", {})
+    candidates = rule_sugg.get("recommended_rules", rule_sugg.get("candidates", []))
+    summary = rule_sugg.get("summary", {})
+    
+    if not candidates:
+        return f"""
+    <section>
+        <h2>Recommended Rules for Unapproved Files</h2>
+        <p>No rule suggestions generated. Check File Review Decisions for files that may need custom rules.</p>
+    </section>"""
+    
+    # Build rows for the suggestions table
+    rows = "".join(f"""
+        <tr>
+            <td>{_e(c.get('rule_type', ''))}</td>
+            <td>{_e(c.get('rule_name', ''))}</td>
+            <td>{_e(c.get('process_pattern', ''))}</td>
+            <td class="path-cell">{_e(c.get('file_pattern', ''))}</td>
+            <td>{_e(c.get('operation', ''))}</td>
+            <td>{_badge(c.get('action', 'Approve').title(), 'info')}</td>
+            <td>{int(c.get('confidence', 0) * 100)}%</td>
+            <td>{_e(c.get('source_event_count', 0))} events</td>
+            <td><span class="expand-btn" onclick="toggleSafetyChecks(this)">+</span></td>
+        </tr>
+        <tr class="safety-checks-row" style="display: none;">
+            <td colspan="9">
+                <div class="safety-checks">
+                    <strong>Safety Checks:</strong>
+                    <ul>
+                        {"".join(f"<li>{_e(check)}</li>" for check in c.get('safety_checks', []))}
+                    </ul>
+                    <strong>Rationale:</strong>
+                    <p>{_e(c.get('rationale', ''))}</p>
+                    <strong>Expected Impact:</strong>
+                    <p>{_e(c.get('expected_enforcement_impact', ''))}</p>
+                </div>
+            </td>
+        </tr>""" for c in candidates)
+    
+    return f"""
+    <section>
+        <h2>Recommended Rules for Unapproved Files
+            <button class="toggle-btn" onclick="toggle('rules-detail')">Show detail &#9660;</button>
+        </h2>
+        <p>These rules are derived from kernel discovery events and file approval patterns. Use them to approve recurring unapproved files.</p>
+        <div id="rules-detail" class="collapsible">
+            <div class="table-wrap">
+                <table id="rules-table">
+                    <thead>
+                        <tr>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 0, 'text')">Rule Type <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 1, 'text')">Rule Name <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 2, 'text')">Process <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 3, 'text')">File Pattern <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">Operation <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Action <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 6, 'number')">Confidence <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Events <span class="sort-indicator"></span></th>
+                            <th style="width: 50px;">Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </div>
+        </div>
+    </section>"""
+
+
 def _render_risks(data: Dict) -> str:
     risks = data.get("risks_requiring_review", [])
     if not risks:
@@ -550,6 +620,16 @@ tr:last-child td { border-bottom: none; }
 .risk-card { border: 1px solid #f8d7da; border-left: 4px solid #dc3545; border-radius: 8px; padding: 16px; }
 .risk-title { font-weight: 700; color: #dc3545; margin-bottom: 8px; }
 .risk-card p { font-size: 0.87rem; margin-top: 6px; }
+
+/* Rule Suggestions */
+.expand-btn { display: inline-block; width: 28px; height: 28px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; text-align: center; line-height: 28px; font-size: 1.2rem; transition: background 0.2s; }
+.expand-btn:hover { background: #0056b3; }
+.safety-checks-row { background: #f8f9fa; border-top: 1px solid #dee2e6; }
+.safety-checks { padding: 12px 0; }
+.safety-checks strong { display: block; margin-top: 10px; margin-bottom: 6px; color: #2c3e50; }
+.safety-checks ul { margin: 0 0 8px 20px; padding: 0; }
+.safety-checks li { margin-bottom: 4px; font-size: 0.9rem; color: #495057; }
+.safety-checks p { margin: 6px 0; font-size: 0.9rem; color: #495057; }
 """
 
 _JS = """
@@ -734,8 +814,51 @@ function updateSortIndicators(tableId) {
 document.addEventListener('DOMContentLoaded', function() {
     sortTable('decisions-table', 0, 'text');
     sortTable('candidates-table', 0, 'text');
+    sortTable('rules-table', 6, 'number');
     applyDecisionTableState(true);
 });
+
+function toggleSafetyChecks(btn) {
+    var row = btn.closest('tr');
+    var nextRow = row.nextElementSibling;
+    
+    if (nextRow && nextRow.classList.contains('safety-checks-row')) {
+        if (nextRow.style.display === 'none') {
+            nextRow.style.display = '';
+            btn.textContent = '-';
+        } else {
+            nextRow.style.display = 'none';
+            btn.textContent = '+';
+        }
+    }
+}
+
+function showApprovalTab(tabName) {
+    var tabs = document.querySelectorAll('.approval-tab-content');
+    var buttons = document.querySelectorAll('.approval-tab-btn');
+
+    tabs.forEach(function(tab) {
+        tab.classList.remove('active');
+        tab.style.display = 'none';
+    });
+    buttons.forEach(function(btn) {
+        btn.classList.remove('active');
+    });
+
+    var tabMap = {
+        'pending': 'approval-pending-tab',
+        'approved': 'approval-approved-tab',
+        'denied': 'approval-denied-tab'
+    };
+
+    var activeTab = document.getElementById(tabMap[tabName]);
+    if (activeTab) {
+        activeTab.classList.add('active');
+        activeTab.style.display = 'block';
+    }
+
+    event.target.classList.add('active');
+}
 """
 
 
@@ -765,6 +888,7 @@ def generate_html_report(data: Dict, output_path: str) -> None:
         _render_llm_section(data),
         _render_score_breakdown(data),
         _render_decisions_table(data),
+        _render_rule_suggestions(data),
         _render_candidates(data),
         _render_risks(data),
     ])

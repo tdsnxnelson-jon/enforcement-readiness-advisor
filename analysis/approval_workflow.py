@@ -338,70 +338,12 @@ class ApprovalWorkflowAnalyzer:
                     )
                 )
 
-        # Fallback suggestions when event descriptions do not expose kernel discovery markers.
-        if not suggestions:
-            local_candidates = [
-                decision
-                for decision in file_decisions
-                if decision.get("decision") == "CONSIDER_LOCAL_APPROVAL"
-            ]
-            global_candidates = [
-                decision
-                for decision in file_decisions
-                if decision.get("decision") in {"CONSIDER_GLOBAL_APPROVAL", "PROCEED_TO_CUSTOM_RULE"}
-            ]
-
-            if local_candidates:
-                sample = local_candidates[0]
-                sample_path = str(sample.get("file_path") or "<path not available>").lower()
-                suggestions.append(
-                    asdict(
-                        RuleSuggestion(
-                            rule_name="Fallback - Local Approval Pattern from recurring local-approval decisions",
-                            rule_type="File Creation Control",
-                            operation="Write/Modify",
-                            action="Approve",
-                            process_pattern="Review Process Name in Events and scope narrowly",
-                            file_pattern=f"{sample_path}*",
-                            user_scope="Any User",
-                            source_event_count=len(local_candidates),
-                            confidence=0.45,
-                            expected_enforcement_impact="Creates a practical starting point to reduce manual approvals even when event detail is limited.",
-                            rationale="Large local-approval volume suggests repeat operational writes that are candidates for controlled local approval rules.",
-                            safety_checks=[
-                                "Validate with New Unapproved File to Computer events before implementation.",
-                                "Start in one policy, then expand after observing stable behavior.",
-                                "Avoid broad wildcarding beyond the observed path family.",
-                            ],
-                        )
-                    )
-                )
-
-            if global_candidates:
-                sample = global_candidates[0]
-                sample_path = str(sample.get("file_path") or "<path not available>").lower()
-                suggestions.append(
-                    asdict(
-                        RuleSuggestion(
-                            rule_name="Fallback - Execution control candidate for recurring global/custom-rule decisions",
-                            rule_type="Execution Control",
-                            operation="Execute",
-                            action="Allow",
-                            process_pattern="Review Process Name in Events and scope narrowly",
-                            file_pattern=f"{sample_path}*",
-                            user_scope="Any User",
-                            source_event_count=len(global_candidates),
-                            confidence=0.4,
-                            expected_enforcement_impact="Provides a constrained execution path for repeat operational files where local approval may not be viable.",
-                            rationale="Recurring global/custom-rule decisions indicate repeat behavior that may require bounded execution allow rules.",
-                            safety_checks=[
-                                "Prefer File Creation Control where write discovery exists.",
-                                "Avoid Execute + Approve combinations.",
-                                "Constrain by process/path/user and review impact after rollout.",
-                            ],
-                        )
-                    )
-                )
+        # When event-based suggestions are insufficient, derive rules directly from
+        # file decisions using path/publisher/extension grouping. This covers the
+        # common case where the App Control server does not populate detailed kernel
+        # discovery markers in event descriptions.
+        if len(suggestions) < 3:
+            suggestions.extend(self._suggest_rules_from_file_decisions(file_decisions))
 
         anti_patterns = self._detect_rule_antipatterns(software_rules)
         weighted_suggestions = self._apply_source_quality_weighting(suggestions, source_quality)
@@ -505,6 +447,153 @@ class ApprovalWorkflowAnalyzer:
             rule_exists=False,
             recurring_event_likelihood=self._recurrence_label(recurring_count),
         )
+
+    def _suggest_rules_from_file_decisions(
+        self, file_decisions: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Generate rule suggestions by grouping unapproved file decisions by directory,
+        extension, and publisher. Used when kernel discovery event data is unavailable.
+        """
+        from collections import defaultdict
+
+        # Group CONSIDER_LOCAL_APPROVAL files by (parent_dir, extension)
+        dir_ext_groups: Dict[tuple, List[Dict]] = defaultdict(list)
+        # Group CONSIDER_APPROVING_PUBLISHER files by publisher
+        publisher_groups: Dict[str, List[Dict]] = defaultdict(list)
+        # Group CONSIDER_GLOBAL_APPROVAL / PROCEED_TO_CUSTOM_RULE by dir
+        global_dir_groups: Dict[str, List[Dict]] = defaultdict(list)
+
+        for d in file_decisions:
+            decision = d.get("decision", "")
+            file_path = str(d.get("file_path") or "").strip().lower().replace("/", "\\")
+            file_name = str(d.get("file_name") or "").strip().lower()
+
+            # Determine parent dir and extension from file_path + file_name
+            # file_path may already be directory-only (no extension in last segment)
+            if file_name and "." in file_name:
+                ext = "." + file_name.rsplit(".", 1)[-1]
+                parent_dir = file_path if file_path else "<unknown>"
+            elif "." in file_path.split("\\")[-1]:
+                last = file_path.split("\\")[-1]
+                ext = "." + last.rsplit(".", 1)[-1]
+                parent_dir = file_path[: file_path.rfind("\\")] if "\\" in file_path else file_path
+            else:
+                ext = ""
+                parent_dir = file_path if file_path else "<unknown>"
+
+            if decision == "CONSIDER_LOCAL_APPROVAL":
+                dir_ext_groups[(parent_dir, ext)].append(d)
+            elif decision == "CONSIDER_APPROVING_PUBLISHER":
+                publisher = str(d.get("file_name") or "unknown_publisher")
+                publisher_groups[publisher].append(d)
+            elif decision in {"CONSIDER_GLOBAL_APPROVAL", "PROCEED_TO_CUSTOM_RULE"}:
+                global_dir_groups[parent_dir].append(d)
+
+        suggestions: List[Dict[str, Any]] = []
+
+        # File Creation Control per (dir, ext) group
+        for (parent_dir, ext), files in sorted(dir_ext_groups.items(), key=lambda x: -len(x[1])):
+            count = len(files)
+            pattern = f"{parent_dir}\\*{ext}" if ext else f"{parent_dir}\\*"
+            label = ext if ext else "any"
+            suggestions.append(
+                asdict(
+                    RuleSuggestion(
+                        rule_name=f"Local Approval - {parent_dir}\\*{ext}",
+                        rule_type="File Creation Control",
+                        operation="Write/Modify",
+                        action="Approve",
+                        process_pattern="Any Process",
+                        file_pattern=pattern,
+                        user_scope="Any User",
+                        source_event_count=count,
+                        confidence=self._confidence_from_count(count, base=0.55),
+                        expected_enforcement_impact=(
+                            f"Approves {count} unapproved {label} file(s) written to {parent_dir}."
+                        ),
+                        rationale=(
+                            f"{count} unapproved file(s) with extension '{label}' found in {parent_dir}. "
+                            "A File Creation Control rule locally approves files as they are written, "
+                            "which is the Broadcom-preferred method over execution-only rules."
+                        ),
+                        safety_checks=[
+                            "Verify the process writing these files is expected (e.g., an installer, update agent).",
+                            "Narrow the process_pattern to the specific writing process before deploying.",
+                            "Pilot in a single policy scope before expanding.",
+                            "Do not apply to user-writable paths (Desktop, Downloads, AppData).",
+                        ],
+                    )
+                )
+            )
+
+        # Publisher approval suggestions
+        for publisher, files in sorted(publisher_groups.items(), key=lambda x: -len(x[1])):
+            count = len(files)
+            suggestions.append(
+                asdict(
+                    RuleSuggestion(
+                        rule_name=f"Approve Publisher - {publisher}",
+                        rule_type="Publisher Approval",
+                        operation="Trust",
+                        action="Approve",
+                        process_pattern="Any Process",
+                        file_pattern=f"All files signed by {publisher}",
+                        user_scope="Any User",
+                        source_event_count=count,
+                        confidence=self._confidence_from_count(count, base=0.65),
+                        expected_enforcement_impact=(
+                            f"Approves all current and future files signed by {publisher} — "
+                            f"covers at least {count} currently unapproved file(s)."
+                        ),
+                        rationale=(
+                            f"{count} unapproved file(s) are signed by publisher '{publisher}'. "
+                            "Approving at the publisher level is the highest-leverage action available: "
+                            "a single rule covers all present and future binaries from this vendor."
+                        ),
+                        safety_checks=[
+                            "Verify this publisher is a known, expected software vendor in your environment.",
+                            "Review what other software this publisher has signed before trusting globally.",
+                            "Consider approving in Audit mode first if any doubt exists.",
+                        ],
+                    )
+                )
+            )
+
+        # Execution Control for global/custom-rule candidates
+        for parent_dir, files in sorted(global_dir_groups.items(), key=lambda x: -len(x[1])):
+            count = len(files)
+            pattern = f"{parent_dir}\\*"
+            suggestions.append(
+                asdict(
+                    RuleSuggestion(
+                        rule_name=f"Execution Control - {parent_dir}",
+                        rule_type="Execution Control",
+                        operation="Execute",
+                        action="Allow",
+                        process_pattern="Any Process",
+                        file_pattern=pattern,
+                        user_scope="Any User",
+                        source_event_count=count,
+                        confidence=self._confidence_from_count(count, base=0.45),
+                        expected_enforcement_impact=(
+                            f"Allows execution of {count} high-prevalence file(s) in {parent_dir}."
+                        ),
+                        rationale=(
+                            f"{count} file(s) in {parent_dir} have high prevalence and are candidates "
+                            "for a global approval or Execution Control rule. Prefer File Creation Control "
+                            "if a writing process can be identified."
+                        ),
+                        safety_checks=[
+                            "Prefer File Creation Control (write-based) approval if the writing process is known.",
+                            "Do not pair Execute with Approve — choose one action.",
+                            "Narrow to the specific process or user if possible.",
+                            "Review after rollout to confirm no unexpected files are executing.",
+                        ],
+                    )
+                )
+            )
+
+        return suggestions
 
     def _is_trustworthy_and_allowed(self, binary: BinaryAnalysis, trusted_publishers: set) -> bool:
         if binary.threat_level and str(binary.threat_level).upper() in {"CRITICAL", "WARNING", "SUSPECT"}:

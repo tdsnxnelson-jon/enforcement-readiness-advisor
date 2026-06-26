@@ -50,7 +50,13 @@ def parse_args():
     parser.add_argument(
         '--model',
         default='mistral',
-        help='Local LLM model name (default: mistral)'
+        help='Ollama model name (default: mistral)'
+    )
+    parser.add_argument(
+        '--ollama-url',
+        default=None,
+        help='Ollama base URL (for example http://localhost:11434 or https://ollama.internal:11434). '
+             'Defaults to OLLAMA_HOST/OLLAMA_BASE_URL if set, otherwise http://localhost:11434.'
     )
     parser.add_argument(
         '--output',
@@ -214,7 +220,7 @@ def main():
     llm_explanation = None
     if not args.no_llm:
         logger.info("\n[4/5] Generating LLM explanations...")
-        llm = LocalLLM(model=args.model)
+        llm = LocalLLM(model=args.model, base_url=args.ollama_url)
         
         if llm.is_available():
             generator = ExplanationGenerator(llm)
@@ -244,12 +250,12 @@ def main():
                     str(e)
                 )
         else:
-            logger.warning("LLM not available - skipping explanations")
+            logger.warning(f"LLM not available at {llm.base_url} - skipping explanations")
             llm_explanation = {
                 'source': 'unavailable',
-                'overall_readiness_status': 'Local LLM service not available. Report generated without model narrative.',
+                'overall_readiness_status': f'Configured Ollama service not available at {llm.base_url}. Report generated without model narrative.',
                 'next_steps': [
-                    'Start Ollama and ensure the selected model is available.',
+                    f'Start Ollama at {llm.base_url} and ensure the selected model is available.',
                     'Re-run without --no-llm to include model-generated narrative.'
                 ]
             }

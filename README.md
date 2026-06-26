@@ -2,7 +2,7 @@
 
 Analyzes a Carbon Black App Control environment and produces a readiness score and recommendations for moving to High Enforcement mode.
 
-> **Privacy:** All data stays on your machine. No information is sent to the cloud. The optional LLM feature uses [Ollama](https://ollama.ai), which runs entirely locally.
+> **Privacy:** By default, all data stays on your machine. If you point the optional LLM feature at a remote Ollama endpoint, report data sent for narrative generation leaves the local host and travels to that endpoint.
 
 ## Quick Start
 
@@ -34,7 +34,7 @@ Open `enforcement_readiness_report.html` in a browser, or inspect `enforcement_r
 
 ## LLM Setup (Optional)
 
-The LLM feature generates a human-readable narrative summary of your environment. It requires [Ollama](https://ollama.ai) running locally — no data leaves your machine.
+The LLM feature generates a human-readable narrative summary of your environment. By default it uses a local [Ollama](https://ollama.ai) instance, but it can also target a remote Ollama endpoint when you explicitly configure one.
 
 **Install Ollama:**
 
@@ -107,13 +107,37 @@ Once Ollama is running, omit `--no-llm` from the command:
 python main.py --server https://your-cbserver.example.com --token <api_token>
 ```
 
+### Remote Ollama Endpoint
+
+If Ollama is running on another host, pass its URL explicitly:
+
+```bash
+python main.py --server https://your-cbserver.example.com --token <api_token> --ollama-url http://10.0.0.25:11434
+```
+
+You can also set an environment variable instead of passing the flag each time:
+
+```bash
+export OLLAMA_HOST=http://10.0.0.25:11434
+python main.py --server https://your-cbserver.example.com --token <api_token>
+```
+
+PowerShell:
+
+```powershell
+$env:OLLAMA_HOST = "http://10.0.0.25:11434"
+python main.py --server https://your-cbserver.example.com --token <api_token>
+```
+
+Precedence is: `--ollama-url` > `OLLAMA_HOST` / `OLLAMA_BASE_URL` > `http://localhost:11434`.
+
 ---
 
 ## Requirements
 
 - Python 3.8+
 - CB App Control server with API access
-- (Optional) [Ollama](https://ollama.ai) running locally for LLM-generated explanations
+- (Optional) [Ollama](https://ollama.ai) reachable locally or on a remote private endpoint for LLM-generated explanations
 
 Install dependencies:
 
@@ -138,7 +162,8 @@ python main.py --server <cb_server_url> --token <api_token> [options]
 
 | Argument | Default | Description |
 |---|---|---|
-| `--model` | `mistral` | Local LLM model name (requires Ollama) |
+| `--model` | `mistral` | Ollama model name |
+| `--ollama-url` | `http://localhost:11434` | Ollama base URL. CLI flag overrides `OLLAMA_HOST` / `OLLAMA_BASE_URL`. |
 | `--output` | `enforcement_readiness_report.json` | Output file path |
 | `--acceleration-mode` | `conservative` | `conservative` (strict thresholds) or `accelerated` (lower thresholds for faster enforcement) |
 | `--no-llm` | `false` | Skip LLM explanation generation |
@@ -162,6 +187,11 @@ python main.py --server https://cbserver.example.com --token abc123 \
 **With a specific Ollama model:**
 ```bash
 python main.py --server https://cbserver.example.com --token abc123 --model llama3
+```
+
+**With a remote Ollama endpoint:**
+```bash
+python main.py --server https://cbserver.example.com --token abc123 --model mistral --ollama-url https://ollama.internal.example:11434
 ```
 
 ## Output
@@ -274,7 +304,7 @@ python main.py --server https://server.example.com --token <token> --verify-ssl
 - **Filter at source**: Use API facets and filters to minimize data transfer
 - **Aggregate early**: Pre-aggregate in SQL/API, not in Python
 - **Small LLM input**: Only pass distilled signals to LLM (< 10MB)
-- **Local only**: All processing stays on customer premises
+- **Endpoint controlled**: LLM processing stays on the configured Ollama host; keep remote endpoints private and access-controlled
 
 ## Project Structure
 
@@ -290,7 +320,7 @@ enforcement_readiness_advisor/
 │   └── path_analysis.py      # Path classification and installer lineage
 ├── llm/
 │   ├── prompt_templates.py   # LLM prompt templates
-│   └── local_llm.py          # Local LLM (Ollama) integration
+│   └── local_llm.py          # Ollama integration (local or remote)
 ├── main.py                   # Main entry point
 ├── requirements.txt          # Python dependencies
 └── README.md                 # This file

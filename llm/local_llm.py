@@ -1,28 +1,45 @@
 # Local LLM Integration for Enforcement Readiness Advisor
-# Uses Ollama API to interact with local LLM models
+# Uses Ollama API to interact with local or remote Ollama-compatible models
 
 import json
 import logging
+import os
 import re
 from typing import Dict, List, Any, Optional
 import requests
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+
+def resolve_ollama_base_url(base_url: Optional[str] = None) -> str:
+    """Resolve the Ollama endpoint from CLI input, environment, or default."""
+    resolved = base_url or os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or DEFAULT_OLLAMA_URL
+    resolved = resolved.strip()
+
+    if not resolved:
+        return DEFAULT_OLLAMA_URL
+
+    if "://" not in resolved:
+        resolved = f"http://{resolved}"
+
+    return resolved.rstrip('/')
+
 
 class LocalLLM:
-    """Interface for local LLM (Ollama-compatible)."""
+    """Interface for local or remote Ollama-compatible LLM services."""
     
-    def __init__(self, model: str = "mistral", base_url: str = "http://localhost:11434"):
+    def __init__(self, model: str = "mistral", base_url: Optional[str] = None):
         """
-        Initialize the local LLM interface.
+        Initialize the Ollama-compatible LLM interface.
         
         Args:
             model: Model name (e.g., "mistral", "llama3", "phi3")
-            base_url: Base URL for Ollama API
+            base_url: Base URL for Ollama API. Defaults to CLI/env/default resolution.
         """
         self.model = model
-        self.base_url = base_url.rstrip('/')
+        self.base_url = resolve_ollama_base_url(base_url)
         self.session = requests.Session()
     
     def generate(self, prompt: str, 

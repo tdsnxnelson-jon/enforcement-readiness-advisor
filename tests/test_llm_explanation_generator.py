@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from llm.local_llm import ExplanationGenerator, LLMError
+from llm.local_llm import ExplanationGenerator, LLMError, LocalLLM
 from analysis.trust_signals import EnforcementReadinessScorer
 
 
@@ -12,6 +12,17 @@ class FakeLLM:
 
     def generate(self, prompt: str, temperature: float = 0.3):
         return self.response
+
+
+def test_local_llm_uses_explicit_remote_base_url():
+    llm = LocalLLM(base_url="https://ollama.internal.example:11434/")
+    assert llm.base_url == "https://ollama.internal.example:11434"
+
+
+def test_local_llm_uses_ollama_host_env(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "ollama-vm.internal:11434")
+    llm = LocalLLM()
+    assert llm.base_url == "http://ollama-vm.internal:11434"
 
 
 def test_get_unknown_binaries_count_accepts_integer():
