@@ -1043,6 +1043,132 @@ class EnforcementReadinessScorer:
             'ready_for_high_enforcement': total_score >= 0.7,
             'recommendation': self._get_recommendation(total_score)
         }
+
+    def annotate_acceleration_candidates(self,
+                                         candidates: List[Dict],
+                                         summary: Dict,
+                                         detailed_analysis: Dict,
+                                         binaries: List[BinaryAnalysis],
+                                         current_readiness: Optional[float] = None) -> List[Dict]:
+        """Attach simulated post-approval readiness to each candidate."""
+        if current_readiness is None:
+            current_readiness = self.calculate_readiness_score(summary, detailed_analysis)['total_score']
+
+        enriched = []
+        for candidate in candidates:
+            projected = self._simulate_candidate_readiness(
+                summary,
+                detailed_analysis,
+                binaries,
+                candidate,
+                current_readiness,
+            )
+            enriched_candidate = dict(candidate)
+            enriched_candidate.update(projected)
+            enriched_candidate['readiness_improvement_percent'] = projected['readiness_gain_percent']
+            enriched.append(enriched_candidate)
+
+        enriched.sort(
+            key=lambda item: (
+                item.get('readiness_gain_percent', 0.0),
+                item.get('projected_readiness_score', 0.0),
+                item.get('confidence_percent', 0.0),
+            ),
+            reverse=True,
+        )
+        return enriched
+
+    def _simulate_candidate_readiness(self,
+                                      summary: Dict,
+                                      detailed_analysis: Dict,
+                                      binaries: List[BinaryAnalysis],
+                                      candidate: Dict,
+                                      current_readiness: float) -> Dict:
+        """Recalculate readiness after approving a single candidate."""
+        matched_file_ids = self._match_candidate_file_ids(candidate, binaries)
+        approved_files = len(matched_file_ids)
+
+        simulated_summary = dict(summary)
+        simulated_summary['unknown_count'] = max(0, summary.get('unknown_count', 0) - approved_files)
+        simulated_summary['approved_count'] = summary.get('approved_count', 0) + approved_files
+
+        simulated_analysis = self._simulate_detailed_analysis(detailed_analysis, candidate)
+        projected_readiness = self.calculate_readiness_score(simulated_summary, simulated_analysis)['total_score']
+
+        return {
+            'projected_readiness_score': projected_readiness,
+            'readiness_gain_percent': round(projected_readiness - current_readiness, 1),
+        }
+
+    def _match_candidate_file_ids(self,
+                                  candidate: Dict,
+                                  binaries: List[BinaryAnalysis]) -> List[str]:
+        """Find which binaries would be approved by a candidate."""
+        candidate_type = candidate.get('type')
+
+        if candidate_type == 'certificate_approval':
+            cert_id = str(candidate.get('cert_id', ''))
+            return [str(binary.file_id) for binary in binaries if str(binary.certificate_id or '') == cert_id]
+
+        if candidate_type == 'publisher_approval':
+            target = candidate.get('target')
+            return [str(binary.file_id) for binary in binaries if binary.publisher == target]
+
+        if candidate_type == 'trusted_installer':
+            target = candidate.get('target')
+            return [str(binary.file_id) for binary in binaries if binary.file_name == target]
+
+        if candidate_type == 'bulk_approval':
+            target = candidate.get('target')
+            if target == 'High-confidence files':
+                return [str(binary.file_id) for binary in binaries if binary.risk_score >= 0.6]
+            if target == 'Medium-confidence files':
+                return [
+                    str(binary.file_id) for binary in binaries
+                    if 0.3 <= binary.risk_score < 0.6
+                ]
+
+        return []
+
+    def _simulate_detailed_analysis(self,
+                                    detailed_analysis: Dict,
+                                    candidate: Dict) -> Dict:
+        """Project detailed analysis changes from approving a single candidate."""
+        publisher_analysis = detailed_analysis.get('publisher_analysis', {})
+        simulated_publisher_analysis = {
+            'trusted': [dict(item) for item in publisher_analysis.get('trusted', [])],
+            'blocked': [dict(item) for item in publisher_analysis.get('blocked', [])],
+            'unknown': [dict(item) for item in publisher_analysis.get('unknown', [])],
+        }
+
+        if candidate.get('type') == 'publisher_approval':
+            target = candidate.get('target')
+            trusted_names = {item.get('name') for item in simulated_publisher_analysis['trusted']}
+            if target not in trusted_names:
+                moved = None
+                for index, item in enumerate(simulated_publisher_analysis['unknown']):
+                    if item.get('name') == target:
+                        moved = simulated_publisher_analysis['unknown'].pop(index)
+                        break
+
+                if moved is None:
+                    moved = {
+                        'id': None,
+                        'name': target,
+                        'reputation': 'TRUSTED',
+                        'product_count': candidate.get('files_to_approve', 0),
+                    }
+                else:
+                    moved = dict(moved)
+                    moved['reputation'] = 'TRUSTED'
+
+                simulated_publisher_analysis['trusted'].append(moved)
+
+        return {
+            'publisher_analysis': simulated_publisher_analysis,
+            'certificate_analysis': dict(detailed_analysis.get('certificate_analysis', {})),
+            'prevalence_analysis': dict(detailed_analysis.get('prevalence_analysis', {})),
+        }
     
     def _calculate_unknown_percentage(self, summary: Dict) -> float:
         """Calculate percentage of unknown binaries."""

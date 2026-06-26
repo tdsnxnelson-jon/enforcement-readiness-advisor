@@ -210,8 +210,44 @@ def main():
         trust_signals.get('new_unapproved_events', {}),
         trust_signals.get('software_rules', {})
     )
-    
+
     readiness = scorer.calculate_readiness_score(summary, detailed_analysis)
+
+    # Add estimated readiness gain for each suggested rule using source event count
+    # as a proxy for impacted unknown files.
+    base_unknown = summary.get('unknown_count', 0)
+    base_approved = summary.get('approved_count', 0)
+    rule_candidates = workflow_rule_suggestions.get('recommended_rules', workflow_rule_suggestions.get('candidates', []))
+    enriched_rule_candidates = []
+    for candidate in rule_candidates:
+        covered = int(candidate.get('source_event_count', 0) or 0)
+        covered = max(0, min(covered, base_unknown))
+
+        simulated_summary = dict(summary)
+        simulated_summary['unknown_count'] = max(0, base_unknown - covered)
+        simulated_summary['approved_count'] = base_approved + covered
+
+        projected = scorer.calculate_readiness_score(simulated_summary, detailed_analysis)['total_score']
+        enriched = dict(candidate)
+        enriched['readiness_gain_percent'] = round(projected - readiness['total_score'], 1)
+        enriched_rule_candidates.append(enriched)
+
+    if 'recommended_rules' in workflow_rule_suggestions:
+        workflow_rule_suggestions['recommended_rules'] = enriched_rule_candidates
+    elif 'candidates' in workflow_rule_suggestions:
+        workflow_rule_suggestions['candidates'] = enriched_rule_candidates
+
+    all_acceleration_candidates = scorer.annotate_acceleration_candidates(
+        analyzer.get_acceleration_candidates(
+            safe_binaries,
+            trust_signals.get('all_certificates', trust_signals.get('valid_certificates', {})),
+            100
+        ),
+        summary,
+        detailed_analysis,
+        safe_binaries,
+        readiness['total_score'],
+    )
     
     logger.info(f"Readiness Score: {readiness['total_score']}%")
     logger.info(f"Ready for High Enforcement: {readiness['ready_for_high_enforcement']}")
@@ -329,23 +365,13 @@ def main():
             for b in safe_binaries[:20]  # Top 20 candidates from safe binaries only
             if b.recommendation == 'AUTO_APPROVE_CANDIDATE'
         ],
-        'acceleration_candidates': analyzer.get_acceleration_candidates(
-            safe_binaries,
-            trust_signals.get('all_certificates', trust_signals.get('valid_certificates', {})),
-            10
-        ),
+        'acceleration_candidates': all_acceleration_candidates[:10],
         'acceleration_plan': {
             'current_readiness': readiness['total_score'],
             'target_readiness': 80.0,  # Target for high enforcement
             'gap_to_target': round(80.0 - readiness['total_score'], 1),
             'acceleration_mode': args.acceleration_mode,
-            'total_acceleration_candidates': len(
-                analyzer.get_acceleration_candidates(
-                    safe_binaries,
-                    trust_signals.get('all_certificates', trust_signals.get('valid_certificates', {})),
-                    100
-                )
-            ),
+            'total_acceleration_candidates': len(all_acceleration_candidates),
             'priority_actions': [
                 f"Use {args.acceleration_mode} mode for {'faster' if args.acceleration_mode == 'accelerated' else 'conservative'} approval thresholds",
                 "Focus on publisher approvals for bulk file approvals",

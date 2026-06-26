@@ -207,6 +207,43 @@ The tool writes a JSON report to the specified output file (default: `enforcemen
 - **Acceleration plan** — Steps to reach the 80% readiness target
 - **LLM explanation** — Human-readable narrative (if LLM is available)
 
+## Data Pulled from App Control
+
+The script pulls multiple datasets from the CB App Control REST API (base path: `/api/bit9platform/v1`) and then computes readiness metrics locally.
+
+### Core API Data Sources
+
+| API Endpoint | What Is Pulled | Why It Is Used |
+|---|---|---|
+| `fileCatalog` | Unknown binaries (`approvalState:NOT_APPROVED`) and approved binaries (`approvalState:APPROVED`) | Main inventory for readiness scoring, candidate generation, and file-level workflow decisions |
+| `companyName` | Trusted and blocked publishers (`reputation:TRUSTED/BLOCKED`) | Publisher trust analysis and workflow decision support |
+| `certificate` | Valid signatures, invalid signatures, and full certificate list | Certificate trust scoring, signer validation, and certificate-chain resolution |
+| `fileInstance` | File-to-computer occurrences (`fileCatalogId`, `computerId`) | Prevalence analysis across endpoints |
+| `computer` | Active computers (`status:Active`) | Endpoint coverage metric used in readiness scoring |
+| `event` | "New Unapproved File to Computer" style events (with fallback filters) | Approval workflow analysis and custom-rule suggestions |
+| Rule endpoints (multiple) | Existing rules from available endpoints (for example `executionControlRule`, `fileCreationControlRule`, `trustedPathRule`, `advancedRule`) | Existing-rule detection and safer recommendation generation |
+
+### Summary Counts Pulled Separately
+
+For readiness scoring summaries, the script also requests count-only totals (`rows=0`) for:
+
+- Unknown binaries
+- Approved binaries
+- Trusted publishers
+- Blocked publishers
+- Valid certificates
+- Active computers
+
+### Computed Locally (Not Pulled Directly)
+
+These are calculated by the script from the API data above:
+
+- Readiness score and weighted breakdown
+- Acceleration candidate gain/projection values
+- Rule suggestion gain estimates
+- Path safety classification results
+- LLM narrative/fallback text
+
 ### Approval Workflow Coverage
 
 The report now includes an `approval_workflow` section with:

@@ -148,7 +148,7 @@ def _render_hero(data: Dict) -> str:
     return f"""
     <div class="hero">
         <div class="hero-score" style="color:{colour}">{score:.0f}<span class="hero-pct">%</span></div>
-        <div class="hero-label">Enforcement Readiness Score</div>
+        <div class="hero-label">Enforcement Readiness Score <span class="tip" data-tooltip="Weighted composite of five dimensions: Unknown File Reduction, Publisher Trust Coverage, Certificate Validity, File Prevalence Pattern, and Endpoint Coverage. Each dimension contributes equally to the 0–100 total.">i</span></div>
         <div class="hero-status {status_class}">{_e(status_text)}</div>
         <p class="hero-rec">{_e(rec_text)}</p>
         <div class="hero-meta">
@@ -368,7 +368,7 @@ def _render_candidates(data: Dict) -> str:
             <td>{_e(c.get('target',''))}</td>
             <td>{_e(c.get('type','').replace('_', ' ').title())}</td>
             <td>{_e(c.get('files_to_approve', '—'))}</td>
-            <td>{_e(c.get('readiness_improvement_percent', '—'))}%</td>
+            <td>{_e(c.get('readiness_gain_percent', '—'))}%</td>
             <td>{_e(c.get('confidence_percent', '—'))}%</td>
             <td>{_badge(c.get('priority','').title(), 'success' if c.get('priority') == 'high' else 'warning')}</td>
             <td class="path-cell">{_e(c.get('rationale',''))}</td>
@@ -377,8 +377,8 @@ def _render_candidates(data: Dict) -> str:
     return f"""
     <section>
         <h2>Top Acceleration Candidates</h2>
-        <p>Approving these certificates or publishers will have the largest immediate impact on your readiness score.
-           Confidence is a heuristic based on available signals (risk score, signature validity, issuer trust, prevalence) — not a guarantee.</p>
+        <p>Each row simulates approving that candidate on its own, then recalculates readiness using the current scoring model.
+           Gain values are independent per-row results and must not be added together. Confidence is still heuristic.</p>
         <div class="table-wrap">
             <table id="candidates-table">
                 <thead>
@@ -386,8 +386,8 @@ def _render_candidates(data: Dict) -> str:
                         <th class="sortable-th" onclick="sortTable('candidates-table', 0, 'text')">Target <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('candidates-table', 1, 'text')">Action Type <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('candidates-table', 2, 'number')">Files Approved <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 3, 'number')">Score Gain <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 4, 'number')">Confidence <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 3, 'number')">Gain <span class="tip tip-below" data-tooltip="Actual percentage-point increase from the current readiness score after approving this candidate by itself. Gains are not additive across rows.">i</span> <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 4, 'number')">Confidence <span class="tip tip-below" data-tooltip="Heuristic confidence based on risk score, digital signature validity, certificate issuer trust, and file prevalence across endpoints. Not a guarantee of safety.">i</span> <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('candidates-table', 5, 'text')">Priority <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('candidates-table', 6, 'text')">Rationale <span class="sort-indicator"></span></th>
                     </tr>
@@ -424,7 +424,8 @@ def _render_rule_suggestions(data: Dict) -> str:
     )
 
     rows = "".join(f"""
-        <tr data-rule-type="{_e(c.get('rule_type', ''))}">
+        <tr data-rule-type="{_e(c.get('rule_type', ''))}" data-expanded="false">
+            <td class="expand-cell"><button class="expand-btn" onclick="toggleSafetyChecks(this)" aria-expanded="false" title="Toggle recommendation details">&gt;</button></td>
             <td>{_e(c.get('rule_type', ''))}</td>
             <td>{_e(c.get('rule_name', ''))}</td>
             <td>{_e(c.get('process_pattern', ''))}</td>
@@ -432,11 +433,11 @@ def _render_rule_suggestions(data: Dict) -> str:
             <td>{_e(c.get('operation', ''))}</td>
             <td>{_badge(c.get('action', 'Approve').title(), 'info')}</td>
             <td>{int(c.get('confidence', 0) * 100)}%</td>
+            <td>{_e(c.get('readiness_gain_percent', '—'))}%</td>
             <td>{_e(c.get('source_event_count', 0))} files</td>
-            <td><button class="expand-btn" onclick="toggleSafetyChecks(this)">+</button></td>
         </tr>
         <tr class="safety-checks-row" style="display: none;">
-            <td colspan="9">
+            <td colspan="10">
                 <div class="safety-checks">
                     <strong>Safety Checks:</strong>
                     <ul>{"".join(f"<li>{_e(check)}</li>" for check in c.get('safety_checks', []))}</ul>
@@ -480,15 +481,16 @@ def _render_rule_suggestions(data: Dict) -> str:
                 <table id="rules-table">
                     <thead>
                         <tr>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 0, 'text')">Rule Type <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 1, 'text')">Rule Name <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 2, 'text')">Process <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 3, 'text')">File Pattern <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">Operation <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Action <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 6, 'number')">Confidence <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Files <span class="sort-indicator"></span></th>
-                            <th style="width: 50px;">Details</th>
+                            <th style="width: 42px;"></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 1, 'text')">Rule Type <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 2, 'text')">Rule Name <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 3, 'text')">Process <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">File Pattern <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Operation <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 6, 'text')">Action <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Confidence <span class="tip tip-below" data-tooltip="Rule confidence based on pattern consistency, digital signature data, and frequency of matched events. Higher values indicate stronger evidence the rule is safe to apply.">i</span> <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 8, 'number')">Gain <span class="tip tip-below" data-tooltip="Estimated percentage-point readiness gain if this rule reduces recurring unapproved activity. Based on source event count as a proxy for impacted files.">i</span> <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 9, 'number')">Files <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
@@ -658,9 +660,67 @@ tr:last-child td { border-bottom: none; }
 .risk-title { font-weight: 700; color: #dc3545; margin-bottom: 8px; }
 .risk-card p { font-size: 0.87rem; margin-top: 6px; }
 
+/* Tooltips */
+.tip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #6c757d; color: #fff;
+    font-size: 0.65rem; font-weight: 700; font-style: normal;
+    cursor: help; vertical-align: middle; position: relative;
+    margin-left: 5px; flex-shrink: 0;
+}
+.tip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 7px);
+    left: 50%; transform: translateX(-50%);
+    background: #2c3e50; color: #fff;
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 0.78rem; font-weight: 400; line-height: 1.45;
+    white-space: normal; width: 260px;
+    pointer-events: none; opacity: 0;
+    transition: opacity 0.15s; z-index: 200; text-align: left;
+}
+.tip::before {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #2c3e50;
+    pointer-events: none; opacity: 0;
+    transition: opacity 0.15s; z-index: 200;
+}
+.tip:hover::after, .tip:hover::before { opacity: 1; }
+/* Tooltip pointing downward — use in table headers to avoid being clipped by elements above */
+.tip-below::after {
+    bottom: auto;
+    top: calc(100% + 7px);
+}
+.tip-below::before {
+    bottom: auto;
+    top: calc(100% + 2px);
+    border-top-color: transparent;
+    border-bottom-color: #2c3e50;
+}
+
 /* Rule Suggestions */
-.expand-btn { display: inline-block; width: 28px; height: 28px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; text-align: center; line-height: 28px; font-size: 1.2rem; transition: background 0.2s; }
-.expand-btn:hover { background: #0056b3; }
+.expand-cell { width: 42px; text-align: center; }
+.expand-btn {
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background: #fff;
+    color: #1a2b45;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 22px;
+    padding: 0;
+}
+.expand-btn:hover { background: #f0f2f5; }
 .safety-checks-row { background: #f8f9fa; border-top: 1px solid #dee2e6; }
 .safety-checks { padding: 12px 0; }
 .safety-checks strong { display: block; margin-top: 10px; margin-bottom: 6px; color: #2c3e50; }
@@ -678,13 +738,21 @@ var tableSortState = {};
 
 function toggle(id) {
     var el = document.getElementById(id);
-    var btn = el.previousElementSibling.querySelector('.toggle-btn');
+    if (!el) {
+        return;
+    }
+    var section = el.closest('section');
+    var btn = section ? section.querySelector('.toggle-btn') : null;
     if (el.style.display === 'block') {
         el.style.display = 'none';
-        btn.innerHTML = 'Show detail &#9660;';
+        if (btn) {
+            btn.innerHTML = 'Show detail &#9660;';
+        }
     } else {
         el.style.display = 'block';
-        btn.innerHTML = 'Hide detail &#9650;';
+        if (btn) {
+            btn.innerHTML = 'Hide detail &#9650;';
+        }
     }
 }
 
@@ -795,13 +863,10 @@ function sortTable(tableId, columnIndex, sortType) {
     }
 
     var tbody = table.querySelector('tbody');
-    var rows = Array.from(tbody.querySelectorAll('tr'));
     var state = tableSortState[tableId] || { column: -1, direction: 'asc' };
     var direction = (state.column === columnIndex && state.direction === 'asc') ? 'desc' : 'asc';
 
-    rows.sort(function(leftRow, rightRow) {
-        var leftValue = (leftRow.cells[columnIndex] || {}).textContent || '';
-        var rightValue = (rightRow.cells[columnIndex] || {}).textContent || '';
+    var sortByValue = function(leftValue, rightValue) {
 
         if (sortType === 'number') {
             leftValue = parseFloat(leftValue.replace(/[^0-9.-]/g, ''));
@@ -816,11 +881,42 @@ function sortTable(tableId, columnIndex, sortType) {
         if (leftValue < rightValue) return direction === 'asc' ? -1 : 1;
         if (leftValue > rightValue) return direction === 'asc' ? 1 : -1;
         return 0;
-    });
+    };
 
-    rows.forEach(function(row) {
-        tbody.appendChild(row);
-    });
+    if (tableId === 'rules-table') {
+        var dataRows = Array.from(tbody.querySelectorAll('tr:not(.safety-checks-row)'));
+        var pairs = dataRows.map(function(row) {
+            var detailRow = row.nextElementSibling;
+            if (!detailRow || !detailRow.classList.contains('safety-checks-row')) {
+                detailRow = null;
+            }
+            return { data: row, detail: detailRow };
+        });
+
+        pairs.sort(function(leftPair, rightPair) {
+            var leftValue = (leftPair.data.cells[columnIndex] || {}).textContent || '';
+            var rightValue = (rightPair.data.cells[columnIndex] || {}).textContent || '';
+            return sortByValue(leftValue, rightValue);
+        });
+
+        pairs.forEach(function(pair) {
+            tbody.appendChild(pair.data);
+            if (pair.detail) {
+                tbody.appendChild(pair.detail);
+            }
+        });
+    } else {
+        var rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.sort(function(leftRow, rightRow) {
+            var leftValue = (leftRow.cells[columnIndex] || {}).textContent || '';
+            var rightValue = (rightRow.cells[columnIndex] || {}).textContent || '';
+            return sortByValue(leftValue, rightValue);
+        });
+
+        rows.forEach(function(row) {
+            tbody.appendChild(row);
+        });
+    }
 
     tableSortState[tableId] = { column: columnIndex, direction: direction, type: sortType };
     updateSortIndicators(tableId);
@@ -840,12 +936,13 @@ function updateSortIndicators(tableId) {
     }
 
     var state = tableSortState[tableId] || { column: -1, direction: 'asc' };
-    table.querySelectorAll('th.sortable-th').forEach(function(header, index) {
+    table.querySelectorAll('th.sortable-th').forEach(function(header) {
         var indicator = header.querySelector('.sort-indicator');
         if (!indicator) {
             return;
         }
-        if (index === state.column) {
+        var columnIndex = Array.from(header.parentElement.children).indexOf(header);
+        if (columnIndex === state.column) {
             indicator.textContent = state.direction === 'asc' ? '▲' : '▼';
         } else {
             indicator.textContent = '';
@@ -856,7 +953,7 @@ function updateSortIndicators(tableId) {
 document.addEventListener('DOMContentLoaded', function() {
     sortTable('decisions-table', 0, 'text');
     sortTable('candidates-table', 0, 'text');
-    sortTable('rules-table', 7, 'number');
+    sortTable('rules-table', 9, 'number');
     applyDecisionTableState(true);
     applyRulesTableState(true);
 });
@@ -917,16 +1014,13 @@ function applyRulesTableState(resetPage) {
     if (!table) return;
     if (resetPage === true) currentRulesPage = 1;
 
-    // Get all data rows and safety rows for index matching
     var allDataRows = Array.from(document.querySelectorAll('#rules-table tbody tr:not(.safety-checks-row)'));
-    var allSafetyRows = Array.from(document.querySelectorAll('#rules-table tbody tr.safety-checks-row'));
-    
-    // Hide all data rows
-    allDataRows.forEach(function(row, index) {
+
+    allDataRows.forEach(function(row) {
         row.style.display = 'none';
-        // Hide corresponding safety row by index (keep its toggle state, just hide it)
-        if (allSafetyRows[index]) {
-            allSafetyRows[index].style.display = 'none';
+        var safetyRow = row.nextElementSibling;
+        if (safetyRow && safetyRow.classList.contains('safety-checks-row')) {
+            safetyRow.style.display = 'none';
         }
     });
 
@@ -937,11 +1031,16 @@ function applyRulesTableState(resetPage) {
     var start = (currentRulesPage - 1) * currentRulesPageSize;
     filtered.slice(start, start + currentRulesPageSize).forEach(function(row) {
         row.style.display = '';
-        // Find this row's index and restore its expansion state
-        var rowIndex = allDataRows.indexOf(row);
-        if (rowIndex >= 0 && allSafetyRows[rowIndex]) {
-            // Keep expansion row in whatever open/closed state the user left it
-            // (don't change its display here, just restore it based on what the user set)
+        var safetyRow = row.nextElementSibling;
+        var btn = row.querySelector('.expand-btn');
+        var expanded = row.dataset.expanded === 'true';
+
+        if (btn) {
+            btn.textContent = expanded ? 'v' : '>';
+            btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        }
+        if (safetyRow && safetyRow.classList.contains('safety-checks-row')) {
+            safetyRow.style.display = expanded ? 'table-row' : 'none';
         }
     });
 
@@ -965,26 +1064,24 @@ function applyRulesTableState(resetPage) {
 
 function toggleSafetyChecks(btn) {
     var row = btn.closest('tr');
-    var table = row.closest('table');
-    
-    // Find this data row's index among all data rows
-    var allDataRows = Array.from(table.querySelectorAll('tbody tr:not(.safety-checks-row)'));
-    var dataRowIndex = allDataRows.indexOf(row);
-    
-    if (dataRowIndex >= 0) {
-        // Get the corresponding safety-checks-row by index
-        var allSafetyRows = Array.from(table.querySelectorAll('tbody tr.safety-checks-row'));
-        var safetyRow = allSafetyRows[dataRowIndex];
-        
-        if (safetyRow) {
-            if (safetyRow.style.display === 'none' || getComputedStyle(safetyRow).display === 'none') {
-                safetyRow.style.display = 'table-row';
-                btn.textContent = '-';
-            } else {
-                safetyRow.style.display = 'none';
-                btn.textContent = '+';
-            }
-        }
+    if (!row) {
+        return;
+    }
+
+    var safetyRow = row.nextElementSibling;
+    if (!safetyRow || !safetyRow.classList.contains('safety-checks-row')) {
+        return;
+    }
+
+    var isExpanded = row.dataset.expanded === 'true';
+    var nextExpanded = !isExpanded;
+    row.dataset.expanded = nextExpanded ? 'true' : 'false';
+
+    btn.textContent = nextExpanded ? 'v' : '>';
+    btn.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+
+    if (row.style.display !== 'none') {
+        safetyRow.style.display = nextExpanded ? 'table-row' : 'none';
     }
 }
 

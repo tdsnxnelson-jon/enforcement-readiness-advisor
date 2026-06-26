@@ -3,7 +3,7 @@ import json
 import pytest
 
 from llm.local_llm import ExplanationGenerator, LLMError, LocalLLM
-from analysis.trust_signals import EnforcementReadinessScorer
+from analysis.trust_signals import BinaryAnalysis, EnforcementReadinessScorer
 
 
 class FakeLLM:
@@ -158,3 +158,65 @@ class TestReadinessScorer:
         assert 'breakdown' in result
         assert 'ready_for_high_enforcement' in result
         assert 'approval_requests' not in result['breakdown']
+
+    def test_annotate_acceleration_candidates_recomputes_projected_readiness(self):
+        summary = {
+            'unknown_count': 10,
+            'approved_count': 90,
+            'active_computer_count': 30,
+        }
+        detailed_analysis = {
+            'publisher_analysis': {'trusted': [], 'blocked': [], 'unknown': []},
+            'certificate_analysis': {},
+            'prevalence_analysis': {},
+        }
+        binaries = [
+            BinaryAnalysis(file_id=str(index), file_name=f'f{index}.exe', file_path=f'C:/f{index}.exe', certificate_id='cert-1')
+            for index in range(1, 6)
+        ]
+        candidates = [{
+            'type': 'certificate_approval',
+            'target': 'Example Cert',
+            'cert_id': 'cert-1',
+            'files_to_approve': 5,
+            'confidence_percent': 90.0,
+        }]
+
+        current = self.scorer.calculate_readiness_score(summary, detailed_analysis)['total_score']
+        annotated = self.scorer.annotate_acceleration_candidates(candidates, summary, detailed_analysis, binaries, current)
+
+        assert annotated[0]['projected_readiness_score'] == pytest.approx(56.2)
+        assert annotated[0]['readiness_gain_percent'] == pytest.approx(1.7)
+        assert annotated[0]['readiness_improvement_percent'] == pytest.approx(1.7)
+
+    def test_publisher_candidate_simulation_updates_publisher_component(self):
+        summary = {
+            'unknown_count': 10,
+            'approved_count': 90,
+            'active_computer_count': 30,
+        }
+        detailed_analysis = {
+            'publisher_analysis': {
+                'trusted': [],
+                'blocked': [],
+                'unknown': [{'name': 'Acme Corp', 'reputation': 'UNKNOWN', 'product_count': 4}],
+            },
+            'certificate_analysis': {},
+            'prevalence_analysis': {},
+        }
+        binaries = [
+            BinaryAnalysis(file_id=str(index), file_name=f'f{index}.exe', file_path=f'C:/f{index}.exe', publisher='Acme Corp')
+            for index in range(1, 5)
+        ]
+        candidates = [{
+            'type': 'publisher_approval',
+            'target': 'Acme Corp',
+            'files_to_approve': 4,
+            'confidence_percent': 80.0,
+        }]
+
+        current = self.scorer.calculate_readiness_score(summary, detailed_analysis)['total_score']
+        annotated = self.scorer.annotate_acceleration_candidates(candidates, summary, detailed_analysis, binaries, current)
+
+        assert annotated[0]['projected_readiness_score'] > current
+        assert annotated[0]['readiness_gain_percent'] > 0
