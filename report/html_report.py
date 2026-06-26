@@ -328,9 +328,9 @@ def _render_decisions_table(data: Dict) -> str:
                         <option value="50">50</option>
                         <option value="100">100</option>
                     </select>
-                    <button class="pager-button" data-action="previous" onclick="previousDecisionPage()">Previous</button>
-                    <button class="pager-button" data-action="next" onclick="nextDecisionPage()">Next</button>
-                    <span class="pager-info" data-role="page-info"></span>
+                    <button id="decision-prev-top" class="pager-button" onclick="previousDecisionPage()">Previous</button>
+                    <button id="decision-next-top" class="pager-button" onclick="nextDecisionPage()">Next</button>
+                    <span id="decision-pager-top" class="pager-info"></span>
                 </div>
             </div>
             <div class="table-wrap">
@@ -349,9 +349,9 @@ def _render_decisions_table(data: Dict) -> str:
             </div>
             <div class="table-toolbar table-toolbar-bottom">
                 <div class="pager-row pager-row-bottom">
-                    <button class="pager-button" data-action="previous" onclick="previousDecisionPage()">Previous</button>
-                    <button class="pager-button" data-action="next" onclick="nextDecisionPage()">Next</button>
-                    <span class="pager-info" data-role="page-info"></span>
+                    <button id="decision-prev-bottom" class="pager-button" onclick="previousDecisionPage()">Previous</button>
+                    <button id="decision-next-bottom" class="pager-button" onclick="nextDecisionPage()">Next</button>
+                    <span id="decision-pager-bottom" class="pager-info"></span>
                 </div>
             </div>
         </div>
@@ -737,15 +737,17 @@ function applyDecisionTableState(resetPage) {
         ? 'No matching files'
         : 'Page ' + currentDecisionPage + ' of ' + totalPages + ' (' + filtered.length + ' matching files)';
 
-    document.querySelectorAll('[data-role="page-info"]').forEach(function(info) {
-        info.textContent = infoText;
+    ['decision-pager-top', 'decision-pager-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = infoText;
     });
-
-    document.querySelectorAll('.pager-button[data-action="previous"]').forEach(function(button) {
-        button.disabled = currentDecisionPage <= 1 || filtered.length === 0;
+    ['decision-prev-top', 'decision-prev-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = currentDecisionPage <= 1 || filtered.length === 0;
     });
-    document.querySelectorAll('.pager-button[data-action="next"]').forEach(function(button) {
-        button.disabled = currentDecisionPage >= totalPages || filtered.length === 0;
+    ['decision-next-top', 'decision-next-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = currentDecisionPage >= totalPages || filtered.length === 0;
     });
 }
 
@@ -789,6 +791,9 @@ function sortTable(tableId, columnIndex, sortType) {
     if (tableId === 'decisions-table') {
         applyDecisionTableState(true);
     }
+    if (tableId === 'rules-table') {
+        applyRulesTableState(true);
+    }
 }
 
 function updateSortIndicators(tableId) {
@@ -814,9 +819,104 @@ function updateSortIndicators(tableId) {
 document.addEventListener('DOMContentLoaded', function() {
     sortTable('decisions-table', 0, 'text');
     sortTable('candidates-table', 0, 'text');
-    sortTable('rules-table', 6, 'number');
+    sortTable('rules-table', 7, 'number');
     applyDecisionTableState(true);
+    applyRulesTableState(true);
 });
+
+// ---- Rules table state ----
+var currentRulesFilter = 'ALL';
+var currentRulesSearch = '';
+var currentRulesPage = 1;
+var currentRulesPageSize = 25;
+
+function filterRules(ruleType) {
+    currentRulesFilter = ruleType;
+    document.querySelectorAll('.rule-filter-pill').forEach(function(pill) {
+        pill.classList.toggle('active', pill.getAttribute('data-rule-type') === ruleType || ruleType === 'ALL');
+    });
+    currentRulesPage = 1;
+    applyRulesTableState();
+}
+
+function searchRules(term) {
+    currentRulesSearch = term || '';
+    currentRulesPage = 1;
+    applyRulesTableState();
+}
+
+function setRulesPageSize(value) {
+    currentRulesPageSize = parseInt(value, 10) || 25;
+    currentRulesPage = 1;
+    applyRulesTableState();
+}
+
+function previousRulesPage() {
+    if (currentRulesPage > 1) {
+        currentRulesPage -= 1;
+        applyRulesTableState(false);
+    }
+}
+
+function nextRulesPage() {
+    var totalPages = Math.max(1, Math.ceil(getRulesFilteredRows().length / currentRulesPageSize));
+    if (currentRulesPage < totalPages) {
+        currentRulesPage += 1;
+        applyRulesTableState(false);
+    }
+}
+
+function getRulesFilteredRows() {
+    // Only data rows (not expansion rows)
+    return Array.from(document.querySelectorAll('#rules-table tbody tr:not(.safety-checks-row)')).filter(function(row) {
+        var matchesType = currentRulesFilter === 'ALL' || row.dataset.ruleType === currentRulesFilter;
+        var matchesSearch = !currentRulesSearch || row.textContent.toLowerCase().indexOf(currentRulesSearch.toLowerCase()) >= 0;
+        return matchesType && matchesSearch;
+    });
+}
+
+function applyRulesTableState(resetPage) {
+    var table = document.getElementById('rules-table');
+    if (!table) return;
+    if (resetPage === true) currentRulesPage = 1;
+
+    // Hide all data rows and their expansion siblings
+    var allDataRows = Array.from(document.querySelectorAll('#rules-table tbody tr:not(.safety-checks-row)'));
+    allDataRows.forEach(function(row) {
+        row.style.display = 'none';
+        var next = row.nextElementSibling;
+        if (next && next.classList.contains('safety-checks-row')) {
+            next.style.display = 'none';
+        }
+    });
+
+    var filtered = getRulesFilteredRows();
+    var totalPages = Math.max(1, Math.ceil(filtered.length / currentRulesPageSize));
+    if (currentRulesPage > totalPages) currentRulesPage = totalPages;
+
+    var start = (currentRulesPage - 1) * currentRulesPageSize;
+    filtered.slice(start, start + currentRulesPageSize).forEach(function(row) {
+        row.style.display = '';
+        // Keep expansion row in whatever open/closed state the user left it
+    });
+
+    var infoText = filtered.length === 0
+        ? 'No matching rules'
+        : 'Page ' + currentRulesPage + ' of ' + totalPages + ' (' + filtered.length + ' matching rules)';
+
+    ['rules-pager-top', 'rules-pager-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = infoText;
+    });
+    ['rules-prev-top', 'rules-prev-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = currentRulesPage <= 1 || filtered.length === 0;
+    });
+    ['rules-next-top', 'rules-next-bottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = currentRulesPage >= totalPages || filtered.length === 0;
+    });
+}
 
 function toggleSafetyChecks(btn) {
     var row = btn.closest('tr');
