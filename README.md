@@ -49,6 +49,52 @@ ollama pull mistral
 
 Other supported models: `llama3`, `phi3`, `gemma2`. Larger models produce better analysis but require more RAM.
 
+### Cloud VM Specs for LLM (Azure, GCP, AWS)
+
+If you cannot run Ollama directly on an endpoint, host it on a VM in your cloud environment. Keep this VM on a private network/VPN because report data may contain sensitive software inventory details.
+
+#### Recommended Sizing by Model Class
+
+| Model Class | Example Models | vCPU | System RAM | GPU | GPU VRAM |
+|---|---|---:|---:|---|---:|
+| Small (7B-8B) | `mistral`, `llama3:8b`, `gemma2:9b` | 4+ | 16-32 GB | 1x NVIDIA T4/L4/A10G | 16-24 GB |
+| Medium (13B-14B) | `llama3:13b` (if used), `qwen2.5:14b` | 8+ | 32-64 GB | 1x NVIDIA L4/A10G | 24 GB |
+| Large (30B+) | 30B+ quantized models | 16+ | 64-128 GB | 2x+ modern NVIDIA GPUs | 48+ GB combined |
+
+#### Cloud Examples (Good Starting Points)
+
+| Cloud | Small (7B-8B) | Medium (13B-14B) | Notes |
+|---|---|---|---|
+| Azure | `Standard_NC4as_T4_v3` | `Standard_NC8as_T4_v3` | T4-based SKUs are cost-effective; availability varies by region. |
+| GCP | `g2-standard-8` + 1x L4 | `g2-standard-16` + 1x L4 | L4 is a strong default for Ollama inference workloads. |
+| AWS | `g5.xlarge` | `g5.2xlarge` | A10G family is commonly available and performs well for 7B-14B models. |
+
+#### Cost-Aware Profiles (Dev vs Prod)
+
+Use this to avoid overprovisioning. Start with Dev sizing, then move to Prod sizing only if latency or concurrency requires it.
+
+> Cost ranges below are rough order-of-magnitude estimates for on-demand pricing and vary by region, discounts, and reserved/savings plans.
+
+| Cloud | Dev / Test Profile | Est. Monthly (730h) | Prod Profile | Est. Monthly (730h) |
+|---|---|---:|---|---:|
+| Azure | `Standard_NC4as_T4_v3` (1x T4, 7B-8B) | ~$350-$700 | `Standard_NC8as_T4_v3` (1x T4, higher CPU/RAM) | ~$700-$1,200 |
+| GCP | `g2-standard-8` + 1x L4 (7B-8B) | ~$450-$900 | `g2-standard-16` + 1x L4 (13B class / higher throughput) | ~$900-$1,500 |
+| AWS | `g5.xlarge` (1x A10G, 7B-8B) | ~$700-$1,300 | `g5.2xlarge` (1x A10G, more CPU/RAM) | ~$1,300-$2,200 |
+
+Right-sizing rule:
+
+- Dev/Test: single 7B-8B model, non-critical latency, 1-3 concurrent users
+- Prod: stricter latency, larger context windows, or 4+ concurrent users
+- If utilization is spiky, keep a small always-on VM and scale up with scheduled or autoscaled GPU capacity
+
+#### Minimum Storage and OS
+
+- Disk: 100 GB SSD minimum (models + logs + OS); 200 GB preferred if testing multiple models
+- OS: Ubuntu 22.04 LTS (recommended) or Windows Server with NVIDIA drivers
+- Network: Private subnet/VNet/VPC + restricted inbound access (no public Ollama endpoint)
+
+> Practical recommendation: Start with a 7B-8B model (`mistral`) on a single-GPU VM, validate quality/latency, then scale up model size only if needed.
+
 **Verify Ollama is running:**
 
 ```bash
