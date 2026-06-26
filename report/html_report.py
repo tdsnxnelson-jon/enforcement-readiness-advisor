@@ -418,7 +418,7 @@ def _render_rule_suggestions(data: Dict) -> str:
     total = len(candidates)
 
     pills = "".join(
-        f'<button class="rule-filter-pill" data-rule-type="{_e(rt)}" onclick="filterRules(\'{_e(rt)}\')">'
+        f'<button class="filter-pill" data-rule-type="{_e(rt)}" onclick="filterRules(\'{_e(rt)}\')">'
         f'{_e(rt)}: <strong>{type_counts[rt]}</strong></button>'
         for rt in rule_types
     )
@@ -456,7 +456,7 @@ def _render_rule_suggestions(data: Dict) -> str:
         <p>{total:,} rule recommendations derived from unapproved file patterns. Sorted by files covered (highest first).</p>
         <div id="rules-detail" class="collapsible">
             <div class="filter-bar">
-                <button class="rule-filter-pill active" data-rule-type="ALL" onclick="filterRules('ALL')">All: <strong>{total}</strong></button>
+                <button class="filter-pill active" data-rule-type="ALL" onclick="filterRules('ALL')">All: <strong>{total}</strong></button>
                 {pills}
             </div>
             <div class="table-toolbar">
@@ -869,7 +869,7 @@ var currentRulesPageSize = 10;
 
 function filterRules(ruleType) {
     currentRulesFilter = ruleType;
-    document.querySelectorAll('.rule-filter-pill').forEach(function(pill) {
+    document.querySelectorAll('.filter-pill[data-rule-type]').forEach(function(pill) {
         pill.classList.toggle('active', pill.getAttribute('data-rule-type') === ruleType || ruleType === 'ALL');
     });
     currentRulesPage = 1;
@@ -957,15 +957,25 @@ function applyRulesTableState(resetPage) {
 
 function toggleSafetyChecks(btn) {
     var row = btn.closest('tr');
-    var nextRow = row.nextElementSibling;
+    var table = row.closest('table');
     
-    if (nextRow && nextRow.classList.contains('safety-checks-row')) {
-        if (nextRow.style.display === 'none') {
-            nextRow.style.display = '';
-            btn.textContent = '-';
-        } else {
-            nextRow.style.display = 'none';
-            btn.textContent = '+';
+    // Find this data row's index among all data rows
+    var allDataRows = Array.from(table.querySelectorAll('tbody tr:not(.safety-checks-row)'));
+    var dataRowIndex = allDataRows.indexOf(row);
+    
+    if (dataRowIndex >= 0) {
+        // Get the corresponding safety-checks-row by index
+        var allSafetyRows = Array.from(table.querySelectorAll('tbody tr.safety-checks-row'));
+        var safetyRow = allSafetyRows[dataRowIndex];
+        
+        if (safetyRow) {
+            if (safetyRow.style.display === 'none') {
+                safetyRow.style.display = '';
+                btn.textContent = '-';
+            } else {
+                safetyRow.style.display = 'none';
+                btn.textContent = '+';
+            }
         }
     }
 }
