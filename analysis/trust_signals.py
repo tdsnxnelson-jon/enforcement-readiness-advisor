@@ -865,7 +865,7 @@ class TrustSignalAnalyzer:
         
         return min(impact, 1.0)
     
-    def analyze_publisher_trust(self, data: Dict) -> Dict:
+    def analyze_publisher_trust(self, data: Dict, summary: Optional[Dict] = None) -> Dict:
         """
         Analyze publisher trust levels.
         
@@ -888,7 +888,7 @@ class TrustSignalAnalyzer:
         }
         
         for pub in publishers:
-            reputation = pub.get('reputation', 'UNKNOWN').upper()
+            reputation = self._normalize_publisher_reputation(pub.get('reputation', 'UNKNOWN'))
             pub_info = {
                 'id': pub.get('id'),
                 'name': pub.get('name'),
@@ -903,11 +903,43 @@ class TrustSignalAnalyzer:
             else:
                 analysis['unknown'].append(pub_info)
         
+        analysis['summary_counts'] = {
+            'trusted': len(analysis['trusted']),
+            'blocked': len(analysis['blocked']),
+            'unknown': len(analysis['unknown'])
+        }
+
+        if summary:
+            analysis['summary_counts']['trusted_total'] = int(summary.get('trusted_publisher_count', 0) or 0)
+            analysis['summary_counts']['blocked_total'] = int(summary.get('blocked_publisher_count', 0) or 0)
+
         logger.info(f"Publisher analysis: {len(analysis['trusted'])} trusted, "
                    f"{len(analysis['blocked'])} blocked, "
                    f"{len(analysis['unknown'])} unknown")
         
         return analysis
+
+    def _normalize_publisher_reputation(self, raw_reputation: Any) -> str:
+        """Normalize reputation values returned in varying API formats."""
+        if raw_reputation is None:
+            return 'UNKNOWN'
+
+        if isinstance(raw_reputation, (int, float)):
+            numeric = int(raw_reputation)
+            if numeric >= 8:
+                return 'TRUSTED'
+            if numeric <= 1:
+                return 'BLOCKED'
+            return 'UNKNOWN'
+
+        normalized = str(raw_reputation).strip().upper()
+        if normalized in {'TRUSTED', 'BLOCKED', 'UNKNOWN'}:
+            return normalized
+        if normalized in {'KNOWN', 'APPROVED'}:
+            return 'TRUSTED'
+        if normalized in {'DENIED', 'UNTRUSTED', 'SUSPECT'}:
+            return 'BLOCKED'
+        return 'UNKNOWN'
     
     def analyze_certificate_trust(self, valid_data: Dict, 
                                   invalid_data: Dict) -> Dict:
@@ -987,6 +1019,122 @@ class TrustSignalAnalyzer:
         
         return analysis
 
+    def analyze_certificate_portfolio(self, certificate_data: Dict, file_catalog: List[Dict], active_computers: int = 0) -> Dict[str, Any]:
+        """Optimize by trusting top certificates with guardrails against broad scope risk."""
+        if not isinstance(file_catalog, list) or not certificate_data:
+            return {'certificates': [], 'top_by_coverage': [], 'guardrail_violations': []}
+        
+        # Count files per certificate
+        cert_coverage = {}
+        for f in file_catalog:
+            cert_id = f.get('certificateId')
+            if cert_id:
+                cert_coverage[cert_id] = cert_coverage.get(cert_id, 0) + 1
+        
+        if not cert_coverage:
+            return {'certificates': [], 'top_by_coverage': [], 'guardrail_violations': []}
+        
+        # Build cert list with coverage
+        certs = isinstance(certificate_data, list) and certificate_data or []
+        cert_map = {c.get('id'): c for c in certs}
+        
+        top_certs = []
+        for cert_id, file_count in sorted(cert_coverage.items(), key=lambda x: x[1], reverse=True)[:15]:
+            cert = cert_map.get(cert_id, {'id': cert_id})
+            issuer = cert.get('issuer', 'Unknown')
+            top_certs.append({
+                'id': cert_id,
+                'issuer': issuer,
+                'file_count': file_count,
+                'affected_computers': len(set(f.get('computerId') for f in file_catalog if f.get('certificateId') == cert_id)),
+                'has_valid_signature': cert.get('hasValidSignature', False),
+                'score_gain_if_trusted': min(0.05 * (file_count / len(file_catalog)), 0.15)
+            })
+        
+        # Apply guardrails
+        violations = []
+        for cert in top_certs:
+            if not cert['has_valid_signature']:
+                violations.append(f"Certificate {cert['id']} lacks valid signature")
+            if cert['affected_computers'] > active_computers * 0.8 and active_computers > 0:
+                violations.append(f"Certificate {cert['id']} affects {cert['affected_computers']} computers (broad scope risk)")
+        
+        return {
+            'certificates': certs if isinstance(certificate_data, list) else [],
+            'top_by_coverage': top_certs,
+            'guardrail_violations': violations,
+            'total_potential_gain': sum(c['score_gain_if_trusted'] for c in top_certs),
+        }
+
+    def simulate_policy_scope_impact(self, approval_workflow: Dict, active_computers: int = 0) -> Dict[str, Any]:
+        """Simulate scope-restricted approvals to unlock high-impact options blocked by broad-scope risk."""
+        if not approval_workflow:
+            return {'scoped_approvals': [], 'unlock_potential': 0.0}
+        
+        rules = approval_workflow.get('rules', [])
+        scoped_candidates = []
+        
+        for rule in rules:
+            scope_risk = rule.get('risk_score', {}).get('broad_scope', 0.0)
+            if scope_risk >= 0.3:  # High scope risk candidate
+                affected_files = rule.get('affected_file_count', 0)
+                if affected_files > 50:
+                    # Estimate gain if we scope this to 1-2 computers instead of global
+                    safe_computer_ids = rule.get('top_affected_computers', [])[:2]
+                    scoped_candidates.append({
+                        'rule_id': rule.get('id'),
+                        'current_scope': 'global',
+                        'proposed_scope': 'pilot',
+                        'proposed_computers': len(safe_computer_ids),
+                        'affected_files': affected_files,
+                        'current_risk_score': scope_risk,
+                        'proposed_risk_score': max(0, scope_risk - 0.25),
+                        'score_gain': min(0.04 * (affected_files / 1000), 0.12),
+                    })
+        
+        return {
+            'scoped_approvals': sorted(scoped_candidates, key=lambda x: x['score_gain'], reverse=True)[:5],
+            'unlock_potential': sum(c['score_gain'] for c in scoped_candidates[:5]),
+        }
+
+    def generate_recurring_event_rules(self, file_events: List[Dict]) -> Dict[str, Any]:
+        """Generate file-creation control rules from high-frequency process/path clusters."""
+        if not isinstance(file_events, list) or not file_events:
+            return {'rules': [], 'unknown_reduction': 0.0}
+        
+        # Cluster by process + path
+        clusters = {}
+        for event in file_events:
+            process = event.get('process', 'unknown')
+            path = event.get('pathName', 'unknown')
+            key = (process, path)
+            clusters[key] = clusters.get(key, 0) + 1
+        
+        # Find high-frequency clusters (>3 occurrences)
+        high_freq = {k: v for k, v in clusters.items() if v >= 3}
+        if not high_freq:
+            return {'rules': [], 'unknown_reduction': 0.0}
+        
+        # Generate suggested rules
+        rules = []
+        total_events = len(file_events)
+        for (process, path), count in sorted(high_freq.items(), key=lambda x: x[1], reverse=True)[:10]:
+            rules.append({
+                'type': 'file_creation_control_rule',
+                'process': process,
+                'path': path,
+                'occurrences': count,
+                'coverage_percent': (count / total_events) * 100,
+                'recommended_action': 'whitelist',
+                'estimated_unknown_reduction': count,
+            })
+        
+        return {
+            'rules': rules,
+            'unknown_reduction': sum(r['estimated_unknown_reduction'] for r in rules),
+        }
+
+
 
 class EnforcementReadinessScorer:
     """Calculates enforcement readiness scores."""
@@ -1025,7 +1173,10 @@ class EnforcementReadinessScorer:
         scores['certificate_trust'] = self._score_certificate_trust(detailed_analysis.get('certificate_analysis', {}))
         
         # Score 4: Prevalence patterns
-        scores['prevalence'] = self._score_prevalence(detailed_analysis.get('prevalence_analysis', {}))
+        scores['prevalence'] = self._score_prevalence(
+            detailed_analysis.get('prevalence_analysis', {}),
+            summary.get('active_computer_count', 0),
+        )
 
         # Score 5: Computer coverage
         scores['computer_coverage'] = self._score_computer_coverage(summary)
@@ -1064,6 +1215,9 @@ class EnforcementReadinessScorer:
                 current_readiness,
             )
             enriched_candidate = dict(candidate)
+            approved_file_count = projected.get('approved_file_count', 0)
+            if approved_file_count > 0:
+                enriched_candidate['files_to_approve'] = approved_file_count
             enriched_candidate.update(projected)
             enriched_candidate['readiness_improvement_percent'] = projected['readiness_gain_percent']
             enriched.append(enriched_candidate)
@@ -1077,6 +1231,98 @@ class EnforcementReadinessScorer:
             reverse=True,
         )
         return enriched
+
+    def build_optimized_acceleration_plan(self,
+                                          candidates: List[Dict],
+                                          binaries: List[BinaryAnalysis],
+                                          summary: Dict,
+                                          detailed_analysis: Dict,
+                                          target_readiness: float = 80.0,
+                                          max_steps: int = 8) -> Dict:
+        """Build a greedy, overlap-aware sequence of acceleration actions."""
+        if not candidates:
+            current = self.calculate_readiness_score(summary, detailed_analysis)['total_score']
+            return {
+                'current_readiness': current,
+                'target_readiness': target_readiness,
+                'projected_readiness': current,
+                'projected_gain': 0.0,
+                'actions': []
+            }
+
+        running_summary = dict(summary)
+        running_analysis = {
+            'publisher_analysis': dict(detailed_analysis.get('publisher_analysis', {})),
+            'certificate_analysis': dict(detailed_analysis.get('certificate_analysis', {})),
+            'prevalence_analysis': dict(detailed_analysis.get('prevalence_analysis', {})),
+        }
+        running_score = self.calculate_readiness_score(running_summary, running_analysis)['total_score']
+
+        covered_file_ids = set()
+        remaining = [dict(candidate) for candidate in candidates]
+        selected_actions: List[Dict] = []
+
+        for _ in range(max_steps):
+            best_choice = None
+            best_gain = 0.0
+
+            for candidate in remaining:
+                file_ids = set(self._match_candidate_file_ids(candidate, binaries))
+                net_new_file_ids = file_ids - covered_file_ids
+
+                overlap_count = len(file_ids) - len(net_new_file_ids)
+                overlap_pct = (overlap_count / len(file_ids) * 100.0) if file_ids else 0.0
+
+                simulated_summary = dict(running_summary)
+                simulated_summary['unknown_count'] = max(
+                    0,
+                    int(running_summary.get('unknown_count', 0) or 0) - len(net_new_file_ids)
+                )
+                simulated_summary['approved_count'] = int(running_summary.get('approved_count', 0) or 0) + len(net_new_file_ids)
+                simulated_analysis = self._simulate_detailed_analysis(running_analysis, candidate)
+                projected_score = self.calculate_readiness_score(simulated_summary, simulated_analysis)['total_score']
+                gain = round(projected_score - running_score, 1)
+
+                if gain > best_gain:
+                    best_gain = gain
+                    best_choice = {
+                        'candidate': candidate,
+                        'projected_score': projected_score,
+                        'gain': gain,
+                        'net_new_file_count': len(net_new_file_ids),
+                        'overlap_percent': round(overlap_pct, 1),
+                        'net_new_file_ids': net_new_file_ids,
+                        'simulated_summary': simulated_summary,
+                        'simulated_analysis': simulated_analysis,
+                    }
+
+            if not best_choice or best_choice['gain'] <= 0:
+                break
+
+            chosen = dict(best_choice['candidate'])
+            chosen['marginal_gain_percent'] = best_choice['gain']
+            chosen['projected_readiness_score'] = best_choice['projected_score']
+            chosen['net_new_files'] = best_choice['net_new_file_count']
+            chosen['overlap_percent'] = best_choice['overlap_percent']
+            selected_actions.append(chosen)
+
+            covered_file_ids.update(best_choice['net_new_file_ids'])
+            running_summary = best_choice['simulated_summary']
+            running_analysis = best_choice['simulated_analysis']
+            running_score = best_choice['projected_score']
+
+            remaining = [c for c in remaining if c != best_choice['candidate']]
+            if running_score >= target_readiness:
+                break
+
+        base_score = self.calculate_readiness_score(summary, detailed_analysis)['total_score']
+        return {
+            'current_readiness': base_score,
+            'target_readiness': target_readiness,
+            'projected_readiness': round(running_score, 1),
+            'projected_gain': round(running_score - base_score, 1),
+            'actions': selected_actions,
+        }
 
     def _simulate_candidate_readiness(self,
                                       summary: Dict,
@@ -1098,6 +1344,7 @@ class EnforcementReadinessScorer:
         return {
             'projected_readiness_score': projected_readiness,
             'readiness_gain_percent': round(projected_readiness - current_readiness, 1),
+            'approved_file_count': approved_files,
         }
 
     def _match_candidate_file_ids(self,
@@ -1112,7 +1359,11 @@ class EnforcementReadinessScorer:
 
         if candidate_type == 'publisher_approval':
             target = candidate.get('target')
-            return [str(binary.file_id) for binary in binaries if binary.publisher == target]
+            return [
+                str(binary.file_id)
+                for binary in binaries
+                if binary.publisher == target and not binary.certificate_id
+            ]
 
         if candidate_type == 'trusted_installer':
             target = candidate.get('target')
@@ -1183,9 +1434,12 @@ class EnforcementReadinessScorer:
         return 1.0 - unknown_pct
     
     def _score_publisher_trust(self, analysis: Dict) -> float:
-        """Score based on publisher trust."""
-        trusted = len(analysis.get('trusted', []))
-        total = trusted + len(analysis.get('unknown', []))
+        """Score based on publisher trust. Includes blocked publishers in denominator."""
+        counts = analysis.get('summary_counts', {})
+        trusted = int(counts.get('trusted_total', counts.get('trusted', len(analysis.get('trusted', [])))) or 0)
+        blocked = int(counts.get('blocked_total', counts.get('blocked', len(analysis.get('blocked', [])))) or 0)
+        unknown = int(counts.get('unknown', len(analysis.get('unknown', []))) or 0)
+        total = trusted + blocked + unknown
         return trusted / total if total > 0 else 0.0
     
     def _score_certificate_trust(self, analysis: Dict) -> float:
@@ -1195,8 +1449,8 @@ class EnforcementReadinessScorer:
         total = valid + invalid
         return valid / total if total > 0 else 0.5
     
-    def _score_prevalence(self, analysis: Dict) -> float:
-        """Score based on file prevalence patterns."""
+    def _score_prevalence(self, analysis: Dict, active_computers: int = 0) -> float:
+        """Score based on file prevalence patterns with fleet-size awareness."""
         high = len(analysis.get('high_prevalence', []))
         medium = len(analysis.get('medium_prevalence', []))
         low = len(analysis.get('low_prevalence', []))
@@ -1206,7 +1460,12 @@ class EnforcementReadinessScorer:
         if total == 0:
             return 0.5
         
-        # More high prevalence = more established = higher score
+        if active_computers and active_computers <= 10:
+            return (high * 1.0 + medium * 0.85 + low * 0.6 + single * 0.35) / total
+
+        if active_computers and active_computers <= 25:
+            return (high * 1.0 + medium * 0.75 + low * 0.45 + single * 0.2) / total
+
         return (high * 1.0 + medium * 0.7 + low * 0.3 + single * 0.1) / total
     
     def _score_computer_coverage(self, summary: Dict) -> float:

@@ -35,21 +35,21 @@ class FileCatalogCollector(BaseCollector):
     def __init__(self, api_client: CBApiClient):
         super().__init__(api_client, 'fileCatalog')
     
-    def get_unknown_binaries(self, rows: int = 1000) -> Dict:
-        """Get all unapproved binaries."""
-        return self.collect(
-            filters=['approvalState:NOT_APPROVED'],
-            facets=['publisherName', 'signer', 'fileType'],
-            rows=rows
-        )
+    def get_unknown_binaries(self, rows: int = 1000) -> list:
+        """Get all unapproved binaries (effectiveState == 'Unapproved')."""
+        # Note: API ignores filters, so we fetch all and filter locally by effectiveState
+        all_files = self.collect(rows=rows)
+        if isinstance(all_files, list):
+            return [f for f in all_files if f.get('effectiveState') == 'Unapproved']
+        return []
     
-    def get_approved_binaries(self, rows: int = 1000) -> Dict:
-        """Get all approved binaries."""
-        return self.collect(
-            filters=['approvalState:APPROVED'],
-            facets=['publisherName', 'signer'],
-            rows=rows
-        )
+    def get_approved_binaries(self, rows: int = 1000) -> list:
+        """Get all approved binaries (effectiveState == 'Approved')."""
+        # Note: API ignores filters, so we fetch all and filter locally by effectiveState
+        all_files = self.collect(rows=rows)
+        if isinstance(all_files, list):
+            return [f for f in all_files if f.get('effectiveState') == 'Approved']
+        return []
     
     def get_by_publisher(self, publisher: str, rows: int = 1000) -> Dict:
         """Get binaries by publisher."""
@@ -100,6 +100,40 @@ class CertificateCollector(BaseCollector):
             filters=[f'issuer:{issuer}'],
             rows=rows
         )
+
+
+class PublisherCollector(BaseCollector):
+    """Collects publisher trust data from /publisher endpoint with actual reputation values."""
+    
+    def __init__(self, api_client: CBApiClient):
+        super().__init__(api_client, 'publisher')
+    
+    def get_trusted_publishers(self, rows: int = 100) -> list:
+        """Get trusted publishers (publisherReputation numeric value 3)."""
+        all_pubs = self.collect(rows=rows)
+        if isinstance(all_pubs, list):
+            return [p for p in all_pubs if p.get('publisherReputation') == 3]
+        return []
+    
+    def get_blocked_publishers(self, rows: int = 100) -> list:
+        """Get blocked publishers (publisherReputation numeric value 2)."""
+        all_pubs = self.collect(rows=rows)
+        if isinstance(all_pubs, list):
+            return [p for p in all_pubs if p.get('publisherReputation') == 2]
+        return []
+    
+    def get_all_by_reputation(self, rows: int = 100) -> dict:
+        """Get all publishers with reputation breakdown."""
+        all_pubs = self.collect(rows=rows)
+        if not isinstance(all_pubs, list):
+            return {'TRUSTED': [], 'BLOCKED': [], 'UNKNOWN': []}
+        
+        result = {
+            'TRUSTED': [p for p in all_pubs if p.get('publisherReputation') == 3],
+            'BLOCKED': [p for p in all_pubs if p.get('publisherReputation') == 2],
+            'UNKNOWN': [p for p in all_pubs if p.get('publisherReputation') == 0],
+        }
+        return result
 
 
 class CompanyNameCollector(BaseCollector):
@@ -383,7 +417,7 @@ class EnforcementReadinessCollector:
         self.max_rows = max_rows
         self.file_catalog = FileCatalogCollector(api_client)
         self.certificate = CertificateCollector(api_client)
-        self.company_name = CompanyNameCollector(api_client)
+        self.publisher = PublisherCollector(api_client)
         self.file_instance = FileInstanceCollector(api_client)
         self.computer = ComputerCollector(api_client)
         self.event = EventCollector(api_client)
@@ -423,10 +457,11 @@ class EnforcementReadinessCollector:
         trust_signals = {
             'unknown_binaries': self.file_catalog.get_unknown_binaries(rows=self.max_rows),
             'approved_binaries': self.file_catalog.get_approved_binaries(rows=self.max_rows),
-            'trusted_publishers': self.company_name.get_trusted_publishers(rows=100),
-            'blocked_publishers': self.company_name.get_blocked_publishers(rows=100),
-            'valid_certificates': self.certificate.get_valid_certificates(rows=100),
-            'invalid_certificates': self.certificate.get_invalid_certificates(rows=100),
+            'trusted_publishers': self.publisher.get_trusted_publishers(rows=self.max_rows),
+            'blocked_publishers': self.publisher.get_blocked_publishers(rows=self.max_rows),
+            'all_publishers': self.publisher.get_all_by_reputation(rows=self.max_rows),
+            'valid_certificates': self.certificate.get_valid_certificates(rows=self.max_rows),
+            'invalid_certificates': self.certificate.get_invalid_certificates(rows=self.max_rows),
             'all_certificates': self.certificate.get_all_certificates(rows=self.max_rows),
             'file_prevalence': self.file_instance.get_file_prevalence(rows=self.max_rows),
             'active_computers': self.computer.get_active_computers(rows=self.max_rows),
@@ -452,11 +487,18 @@ class EnforcementReadinessCollector:
         Returns:
             Summary dictionary
         """
+        unknown = self._get_count(self.file_catalog.get_unknown_binaries(rows=0))
+        approved = self._get_count(self.file_catalog.get_approved_binaries(rows=0))
+        trusted_pub = self._get_count(self.publisher.get_trusted_publishers(rows=0))
+        blocked_pub = self._get_count(self.publisher.get_blocked_publishers(rows=0))
+        
+        logger.info(f"Summary counts - unknown: {unknown}, approved: {approved}, trusted_pub: {trusted_pub}, blocked_pub: {blocked_pub}")
+        
         return {
-            'unknown_count': self._get_count(self.file_catalog.get_unknown_binaries(rows=0)),
-            'approved_count': self._get_count(self.file_catalog.get_approved_binaries(rows=0)),
-            'trusted_publisher_count': self._get_count(self.company_name.get_trusted_publishers(rows=0)),
-            'blocked_publisher_count': self._get_count(self.company_name.get_blocked_publishers(rows=0)),
+            'unknown_count': unknown,
+            'approved_count': approved,
+            'trusted_publisher_count': trusted_pub,
+            'blocked_publisher_count': blocked_pub,
             'valid_certificate_count': self._get_count(self.certificate.get_valid_certificates(rows=0)),
             'active_computer_count': self._get_count(self.computer.get_active_computers(rows=0)),
         }
@@ -465,5 +507,9 @@ class EnforcementReadinessCollector:
         """Extract count from API response."""
         # Handle both list and dict responses
         if isinstance(response, list):
-            return len(response)
-        return response.get('total', response.get('count', 0))
+            count = len(response)
+        else:
+            count = response.get('total', response.get('count', 0))
+        
+        logger.debug(f"API response count extraction: {response if isinstance(response, dict) else f'list({len(response)} items)'} → {count}")
+        return count
