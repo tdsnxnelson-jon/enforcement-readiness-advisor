@@ -1,8 +1,6 @@
 # Enforcement Readiness Advisor
 
-Analyzes a Carbon Black App Control environment and produces a readiness score and recommendations for moving to High Enforcement mode.
-
-> **Privacy:** By default, all data stays on your machine. If you point the optional LLM feature at a remote Ollama endpoint, report data sent for narrative generation leaves the local host and travels to that endpoint.
+Analyzes a Carbon Black App Control environment and produces a readiness score and actionable recommendations for moving toward High Enforcement mode.
 
 ## Quick Start
 
@@ -10,7 +8,6 @@ Analyzes a Carbon Black App Control environment and produces a readiness score a
 
 - Python 3.8 or higher
 - CB App Control server with API access
-- (Optional) [Ollama](https://ollama.ai) for AI-generated explanations — see [LLM Setup](#llm-setup-optional) below
 
 ### 2. Install
 
@@ -20,130 +17,20 @@ cd enforcement-readiness-advisor
 pip install -r requirements.txt
 ```
 
-### 3. Run (without LLM)
+### 3. Run
 
 ```bash
-python main.py --server https://your-cbserver.example.com --token <api_token> --no-llm
+python main.py --server https://your-cbserver.example.com --token <api_token>
 ```
 
 ### 4. View the report
 
 Open `enforcement_readiness_report.html` in a browser, or inspect `enforcement_readiness_report.json` directly.
 
----
-
-## LLM Setup (Optional)
-
-The LLM feature generates a human-readable narrative summary of your environment. By default it uses a local [Ollama](https://ollama.ai) instance, but it can also target a remote Ollama endpoint when you explicitly configure one.
-
-**Install Ollama:**
-
-- Windows / macOS: Download from [https://ollama.ai/download](https://ollama.ai/download)
-- Linux: `curl -fsSL https://ollama.ai/install.sh | sh`
-
-**Pull a model (Mistral is recommended — fast, fits in 8 GB RAM):**
-
-```bash
-ollama pull mistral
-```
-
-Other supported models: `llama3`, `phi3`, `gemma2`. Larger models produce better analysis but require more RAM.
-
-### Cloud VM Specs for LLM (Azure, GCP, AWS)
-
-If you cannot run Ollama directly on an endpoint, host it on a VM in your cloud environment. Keep this VM on a private network/VPN because report data may contain sensitive software inventory details.
-
-#### Recommended Sizing by Model Class
-
-| Model Class | Example Models | vCPU | System RAM | GPU | GPU VRAM |
-|---|---|---:|---:|---|---:|
-| Small (7B-8B) | `mistral`, `llama3:8b`, `gemma2:9b` | 4+ | 16-32 GB | 1x NVIDIA T4/L4/A10G | 16-24 GB |
-| Medium (13B-14B) | `llama3:13b` (if used), `qwen2.5:14b` | 8+ | 32-64 GB | 1x NVIDIA L4/A10G | 24 GB |
-| Large (30B+) | 30B+ quantized models | 16+ | 64-128 GB | 2x+ modern NVIDIA GPUs | 48+ GB combined |
-
-#### Cloud Examples (Good Starting Points)
-
-| Cloud | Small (7B-8B) | Medium (13B-14B) | Notes |
-|---|---|---|---|
-| Azure | `Standard_NC4as_T4_v3` | `Standard_NC8as_T4_v3` | T4-based SKUs are cost-effective; availability varies by region. |
-| GCP | `g2-standard-8` + 1x L4 | `g2-standard-16` + 1x L4 | L4 is a strong default for Ollama inference workloads. |
-| AWS | `g5.xlarge` | `g5.2xlarge` | A10G family is commonly available and performs well for 7B-14B models. |
-
-#### Cost-Aware Profiles (Dev vs Prod)
-
-Use this to avoid overprovisioning. Start with Dev sizing, then move to Prod sizing only if latency or concurrency requires it.
-
-> Cost ranges below are rough order-of-magnitude estimates for on-demand pricing and vary by region, discounts, and reserved/savings plans.
-
-| Cloud | Dev / Test Profile | Est. Monthly (730h) | Prod Profile | Est. Monthly (730h) |
-|---|---|---:|---|---:|
-| Azure | `Standard_NC4as_T4_v3` (1x T4, 7B-8B) | ~$350-$700 | `Standard_NC8as_T4_v3` (1x T4, higher CPU/RAM) | ~$700-$1,200 |
-| GCP | `g2-standard-8` + 1x L4 (7B-8B) | ~$450-$900 | `g2-standard-16` + 1x L4 (13B class / higher throughput) | ~$900-$1,500 |
-| AWS | `g5.xlarge` (1x A10G, 7B-8B) | ~$700-$1,300 | `g5.2xlarge` (1x A10G, more CPU/RAM) | ~$1,300-$2,200 |
-
-Right-sizing rule:
-
-- Dev/Test: single 7B-8B model, non-critical latency, 1-3 concurrent users
-- Prod: stricter latency, larger context windows, or 4+ concurrent users
-- If utilization is spiky, keep a small always-on VM and scale up with scheduled or autoscaled GPU capacity
-
-#### Minimum Storage and OS
-
-- Disk: 100 GB SSD minimum (models + logs + OS); 200 GB preferred if testing multiple models
-- OS: Ubuntu 22.04 LTS (recommended) or Windows Server with NVIDIA drivers
-- Network: Private subnet/VNet/VPC + restricted inbound access (no public Ollama endpoint)
-
-> Practical recommendation: Start with a 7B-8B model (`mistral`) on a single-GPU VM, validate quality/latency, then scale up model size only if needed.
-
-**Verify Ollama is running:**
-
-```bash
-ollama list
-```
-
-Once Ollama is running, omit `--no-llm` from the command:
-
-```bash
-python main.py --server https://your-cbserver.example.com --token <api_token>
-```
-
-### Remote Ollama Endpoint
-
-If Ollama is running on another host, pass its URL explicitly:
-
-```bash
-python main.py --server https://your-cbserver.example.com --token <api_token> --ollama-url http://10.0.0.25:11434
-```
-
-You can also set an environment variable instead of passing the flag each time:
-
-```bash
-export OLLAMA_HOST=http://10.0.0.25:11434
-python main.py --server https://your-cbserver.example.com --token <api_token>
-```
-
-PowerShell:
-
-```powershell
-$env:OLLAMA_HOST = "http://10.0.0.25:11434"
-python main.py --server https://your-cbserver.example.com --token <api_token>
-```
-
-Precedence is: `--ollama-url` > `OLLAMA_HOST` / `OLLAMA_BASE_URL` > `http://localhost:11434`.
-
----
-
 ## Requirements
 
 - Python 3.8+
 - CB App Control server with API access
-- (Optional) [Ollama](https://ollama.ai) reachable locally or on a remote private endpoint for LLM-generated explanations
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
 
 ## Usage
 
@@ -151,81 +38,145 @@ pip install -r requirements.txt
 python main.py --server <cb_server_url> --token <api_token> [options]
 ```
 
+Or use a JSON config file:
+
+```bash
+python main.py --config advisor_config.json
+```
+
+Config precedence is:
+
+1. CLI arguments
+2. Config file values
+3. Built-in defaults
+
 ### Required Arguments
 
 | Argument | Description |
 |---|---|
-| `--server` | CB App Control server URL (e.g., `https://server.example.com`) |
+| `--server` | CB App Control server URL (for example `https://server.example.com`) |
 | `--token` | API token for authentication |
 
 ### Optional Arguments
 
 | Argument | Default | Description |
 |---|---|---|
-| `--model` | `mistral` | Ollama model name |
-| `--ollama-url` | `http://localhost:11434` | Ollama base URL. CLI flag overrides `OLLAMA_HOST` / `OLLAMA_BASE_URL`. |
-| `--output` | `enforcement_readiness_report.json` | Output file path |
-| `--acceleration-mode` | `conservative` | `conservative` (strict thresholds) or `accelerated` (lower thresholds for faster enforcement) |
-| `--no-llm` | `false` | Skip LLM explanation generation |
+| `--config` | `None` | Optional JSON config path (CLI overrides config) |
+| `--output` | `enforcement_readiness_report.json` | Output JSON file path |
+| `--html-output` | `<output>.html` | Output HTML file path |
+| `--no-html` | `false` | Skip HTML report generation |
+| `--html` | `false` | Force HTML report generation (overrides config) |
+| `--acceleration-mode` | `conservative` | `conservative` (stricter thresholds) or `accelerated` (faster readiness lift) |
+| `--max-rows` | `5000` | Maximum rows fetched per collection |
 | `--verify-ssl` | `false` | Verify SSL certificates |
+| `--insecure` | `false` | Disable SSL verification (overrides config) |
 
 ### Examples
 
-**Basic run:**
 ```bash
 python main.py --server https://cbserver.example.com --token abc123
 ```
 
-**Accelerated mode, custom output file, skip LLM:**
 ```bash
-python main.py --server https://cbserver.example.com --token abc123 \
-  --acceleration-mode accelerated \
-  --output my_report.json \
-  --no-llm
+python main.py --server https://cbserver.example.com --token abc123 --acceleration-mode accelerated --output my_report.json
 ```
 
-**With a specific Ollama model:**
 ```bash
-python main.py --server https://cbserver.example.com --token abc123 --model llama3
+python main.py --server https://cbserver.example.com --token abc123 --html-output readiness.html
 ```
 
-**With a remote Ollama endpoint:**
 ```bash
-python main.py --server https://cbserver.example.com --token abc123 --model mistral --ollama-url https://ollama.internal.example:11434
+python main.py --config advisor_config.json
 ```
+
+```bash
+python main.py --config advisor_config.json --max-rows 8000 --verify-ssl
+```
+
+### Config File
+
+Use [advisor_config.example.json](advisor_config.example.json) as a template and create your own `advisor_config.json`.
+
+`advisor_config.json` can include:
+
+- `server`
+- `token`
+- `verify_ssl`
+- `output`
+- `html_output`
+- `no_html`
+- `acceleration_mode`
+- `max_rows`
+- `rapid_config`
+- `endpoint_readiness`
+
+`rapid_config` supports:
+
+- `excluded_configs` (list of names/IDs/patterns to remove from Rapid Config scoring)
+
+`excluded_configs` matching supports:
+
+- Exact name (for example `"Office Script Control"`)
+- Exact ID using `id:` prefix (for example `"id:12345"`)
+- Exact name using `name:` prefix (for example `"name:Linux Baseline"`)
+- Wildcards via glob syntax (for example `"*Linux*"`)
+
+Excluded Rapid Config entries are marked as not relevant in analysis views and omitted from `rapid_config_readiness` scoring. They are listed in report output under `rapid_config_analysis.excluded_configs`.
+
+`endpoint_readiness` supports:
+
+- `lookback_days`
+- `min_ready_score`
+- `near_ready_score`
+- `max_block_events`
+- `max_unapproved_events`
+- `unapproved_penalty`
+- `block_penalty`
+- `recent_penalty`
+- `max_unapproved_penalty`
+- `max_block_penalty`
+- `max_recent_penalty`
 
 ## Output
 
-The tool writes a JSON report to the specified output file (default: `enforcement_readiness_report.json`) containing:
+The tool writes a JSON report (default: `enforcement_readiness_report.json`) and an HTML report (default: `enforcement_readiness_report.html`) containing:
 
-- **Readiness score** — Overall percentage score and whether the environment is ready for High Enforcement
-- **Summary** — Counts of unknown binaries, trusted publishers, certificates, etc.
-- **Path filter results** — Binaries excluded from auto-approval because they reside in user-writable paths
-- **Approval workflow guidance** — Broadcom-aligned event console setup, per-file decisions, and custom-rule recommendations
-- **Auto-approval candidates** — Top binaries recommended for automatic approval
-- **Acceleration candidates** — Binaries that would most improve the readiness score if approved
-- **Acceleration plan** — Steps to reach the 80% readiness target
-- **LLM explanation** — Human-readable narrative (if LLM is available)
+- Readiness score and recommendation
+- Score breakdown and score audit checks
+- Environment baseline metrics
+- Approval workflow guidance and per-file decisions
+- Rule suggestions and acceleration candidates
+- Guardrail checks and rollout workflow guidance
+- Strategic recommendations, certificate portfolio, policy scope simulation, and recurring event analysis
+
+## Report UI Notes
+
+The HTML report includes:
+
+- Tabbed navigation across major sections
+- Automatic scroll to the top when changing tabs
+- Search, sorting, filtering, and pagination for report tables
+- Pager status text (for example: `Page 1 of 1 (8 matching rows)`) on managed tables
 
 ## Data Pulled from App Control
 
-The script pulls multiple datasets from the CB App Control REST API (base path: `/api/bit9platform/v1`) and then computes readiness metrics locally.
+The script pulls multiple datasets from the CB App Control REST API (base path: `/api/bit9platform/v1`) and computes readiness metrics locally.
 
 ### Core API Data Sources
 
 | API Endpoint | What Is Pulled | Why It Is Used |
 |---|---|---|
-| `fileCatalog` | Unknown binaries (`approvalState:NOT_APPROVED`) and approved binaries (`approvalState:APPROVED`) | Main inventory for readiness scoring, candidate generation, and file-level workflow decisions |
-| `companyName` | Trusted and blocked publishers (`reputation:TRUSTED/BLOCKED`) | Publisher trust analysis and workflow decision support |
-| `certificate` | Valid signatures, invalid signatures, and full certificate list | Certificate trust scoring, signer validation, and certificate-chain resolution |
-| `fileInstance` | File-to-computer occurrences (`fileCatalogId`, `computerId`) | Prevalence analysis across endpoints |
-| `computer` | Active computers (`status:Active`) | Endpoint coverage metric used in readiness scoring |
-| `event` | "New Unapproved File to Computer" style events (with fallback filters) | Approval workflow analysis and custom-rule suggestions |
-| Rule endpoints (multiple) | Existing rules from available endpoints (for example `executionControlRule`, `fileCreationControlRule`, `trustedPathRule`, `advancedRule`) | Existing-rule detection and safer recommendation generation |
+| `fileCatalog` | Unknown (`approvalState:NOT_APPROVED`) and approved (`approvalState:APPROVED`) binaries | Main inventory for scoring and candidate generation |
+| `companyName` | Trusted and blocked publishers (`reputation:TRUSTED/BLOCKED`) | Publisher trust analysis |
+| `certificate` | Valid signatures, invalid signatures, and full certificate list | Certificate trust scoring |
+| `fileInstance` | File-to-computer occurrences (`fileCatalogId`, `computerId`) | Prevalence analysis |
+| `computer` | Active computers (`status:Active`) | Endpoint coverage metric |
+| `event` | New unapproved file events (with fallback filters) | Approval workflow and rule suggestions |
+| Rule endpoints (multiple) | Existing rules from available endpoints | Safer recommendation generation |
 
-### Summary Counts Pulled Separately
+### Count-Only Summary Calls
 
-For readiness scoring summaries, the script also requests count-only totals (`rows=0`) for:
+For readiness summaries, the script also requests count-only totals (`rows=0`) for:
 
 - Unknown binaries
 - Approved binaries
@@ -234,131 +185,35 @@ For readiness scoring summaries, the script also requests count-only totals (`ro
 - Valid certificates
 - Active computers
 
-### Computed Locally (Not Pulled Directly)
-
-These are calculated by the script from the API data above:
-
-- Readiness score and weighted breakdown
-- Acceleration candidate gain/projection values
-- Rule suggestion gain estimates
-- Path safety classification results
-- LLM narrative/fallback text
-
-### Approval Workflow Coverage
-
-The report now includes an `approval_workflow` section with:
-
-- `console_setup_guidance`: Event view setup guidance from the Broadcom workflow (filters, columns, grouping)
-- `file_evaluation`: Per-file decision outcomes from the "Evaluating Each File" flowchart
-- `custom_rule_considerations`: Event-description-based recommendations from the "Consider a Custom Rule" flowchart
-- `rule_suggestions`: Broadcom-guided candidate rules to accelerate toward High Enforcement, including:
-  - Prioritized `recommended_rules` (File Creation Control, Execution Control, and selective Performance Optimization)
-  - `rule_anti_patterns_detected` warnings for known risky rule patterns
-  - `strategy_notes` and summary counts to support implementation planning
-
-### Readiness Score Breakdown
-
-The total score is a weighted average of six components. Each component is scored 0–100%, then multiplied by its weight to produce the total score.
-
-#### Score Components
-
-| Component | Weight | Description |
-|---|---|---|
-| **Unknown Binaries** | 25% | Percentage of binaries that are **recognized or approved**. Unknown binaries are the primary blocker to enforcement readiness. Score = (1 − unknown%) × 100 |
-| **Publisher Trust** | 20% | Percentage of binaries with **trusted publishers** among all binaries analyzed. Trusted publishers indicate legitimate software that can be safely approved. |
-| **Certificate Trust** | 15% | Percentage of files signed with **valid certificates**. Valid certificates indicate authentic software from legitimate authors. |
-| **Prevalence** | 15% | Distribution of **file prevalence** across the organization. Higher score for files seen across many computers (high prevalence) vs. single-endpoint files. Patterns: high=1.0, medium=0.7, low=0.3, single-endpoint=0.1 |
-| **Approval Requests** | 15% | Status of pending **approval requests**. Currently a placeholder metric (static 50%) pending implementation. |
-| **Computer Coverage** | 10% | **Percentage of computers** in the organization with analyzed data. Currently a placeholder metric (static 50%) pending implementation. |
-
-#### Recommendation Thresholds
-
-The total score determines readiness for enforcement mode changes:
-
-| Score Range | Status | Recommendation |
-|---|---|---|
-| ≥ 80% | Ready | `READY_FOR_HIGH_ENFORCEMENT` — Environment is prepared for high enforcement mode |
-| 60–79% | Near Ready | `NEAR_READY` — Address remaining unknowns before high enforcement |
-| 40–59% | Medium Risk | `MEDIUM_ENFORCEMENT_RECOMMENDED` — Move to medium enforcement; continue reducing unknowns |
-| < 40% | High Risk | `MAINTAIN_LOW_ENFORCEMENT` — Focus on identifying and approving common binaries first |
-
-#### Example Score Breakdown
-
-```json
-{
-  "total_score": 34.1,
-  "breakdown": {
-    "unknown_binaries": 50.0,
-    "publisher_trust": 0.0,
-    "certificate_trust": 50.0,
-    "prevalence": 10.7,
-    "approval_requests": 50.0,
-    "computer_coverage": 50.0
-  },
-  "weights": {
-    "unknown_binaries": 0.25,
-    "publisher_trust": 0.2,
-    "certificate_trust": 0.15,
-    "prevalence": 0.15,
-    "approval_requests": 0.15,
-    "computer_coverage": 0.1
-  },
-  "ready_for_high_enforcement": false,
-  "recommendation": "MAINTAIN_LOW_ENFORCEMENT"
-}
-```
-
-**Calculation:** (50.0 × 0.25) + (0.0 × 0.2) + (50.0 × 0.15) + (10.7 × 0.15) + (50.0 × 0.15) + (50.0 × 0.1) = **34.1%**
-
 ## Troubleshooting
 
 ### SSL Certificate Warnings
 
-If you see `InsecureRequestWarning` messages from urllib3:
+If you see `InsecureRequestWarning` messages from urllib3, this means SSL verification is disabled (default behavior). These warnings are informational and do not stop report generation.
 
-```
-urllib3.exceptions.InsecureRequestWarning: Unverified HTTPS request is being made to host...
-```
-
-This occurs when running without SSL verification (default behavior). These are **informational warnings, not errors** — the script runs successfully. The warnings are automatically suppressed as of v1.1. If you still see them, they're safe to ignore.
-
-**To eliminate warnings entirely:** If your CB App Control server has a valid SSL certificate, use:
+To enforce certificate validation:
 
 ```bash
 python main.py --server https://server.example.com --token <token> --verify-ssl
 ```
 
-## Data Flow
-
-1. **API Collection** → Query pre-aggregated endpoints (fileCatalog, certificate, etc.)
-2. **Aggregation** → Extract trust signals from API responses
-3. **Analysis** → Calculate trust scores and readiness metrics
-4. **LLM Explanation** → Generate human-readable explanations (optional)
-5. **Output** → Produce JSON report and recommendations
-
-## Key Design Principles
-
-- **Filter at source**: Use API facets and filters to minimize data transfer
-- **Aggregate early**: Pre-aggregate in SQL/API, not in Python
-- **Small LLM input**: Only pass distilled signals to LLM (< 10MB)
-- **Endpoint controlled**: LLM processing stays on the configured Ollama host; keep remote endpoints private and access-controlled
-
 ## Project Structure
 
-```
+```text
 enforcement_readiness_advisor/
 ├── config/
-│   └── api_endpoints.py      # CB App Control API endpoint definitions
+│   └── api_endpoints.py
 ├── data_collection/
-│   ├── api_client.py         # CB API client
-│   └── collectors.py         # Data collectors for each endpoint
+│   ├── api_client.py
+│   └── collectors.py
 ├── analysis/
-│   ├── trust_signals.py      # Trust signal extraction and scoring
-│   └── path_analysis.py      # Path classification and installer lineage
-├── llm/
-│   ├── prompt_templates.py   # LLM prompt templates
-│   └── local_llm.py          # Ollama integration (local or remote)
-├── main.py                   # Main entry point
-├── requirements.txt          # Python dependencies
-└── README.md                 # This file
+│   ├── trust_signals.py
+│   ├── path_analysis.py
+│   ├── approval_workflow.py
+│   └── strategic_recommendations.py
+├── report/
+│   └── html_report.py
+├── main.py
+├── requirements.txt
+└── README.md
 ```

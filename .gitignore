@@ -2,6 +2,7 @@
 *.json
 *.html
 !tests/**/*.json
+!advisor_config.example.json
 
 # --- Python ---
 __pycache__/

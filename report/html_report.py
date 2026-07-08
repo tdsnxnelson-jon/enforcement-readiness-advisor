@@ -56,6 +56,13 @@ _SCORE_META = {
             "a single machine are less confident."
         ),
     },
+    "rapid_config_readiness": {
+        "label": "Rapid Config Readiness",
+        "explain": (
+            "Measures whether enabled Rapid Config controls are relevant to detected endpoint platforms, "
+            "staged in report mode first, and narrowly scoped to reduce operational risk before enforcement."
+        ),
+    },
 }
 
 _DECISION_LABELS = {
@@ -193,61 +200,9 @@ def _render_score_breakdown(data: Dict) -> str:
     </section>"""
 
 
-def _render_llm_section(data: Dict) -> str:
-    llm = data.get("llm_explanation")
-    if not llm:
-        return ""
-
-    source = llm.get("source", "unknown")
-    if source == "disabled":
-        return ""
-
-    status = llm.get("overall_readiness_status", "")
-    strengths = llm.get("strengths", [])
-    improvements = llm.get("areas_for_improvement", [])
-    next_steps = llm.get("next_steps", [])
-    limits = llm.get("confidence_and_limits", "")
-
-    source_note = {
-        "llm":         "",
-        "fallback":    '<div class="banner banner-info">&#8505; AI narrative was unavailable; this summary was generated automatically from collected signals.</div>',
-        "unavailable": '<div class="banner banner-info">&#8505; Configured Ollama service was not reachable. Start the service or correct the endpoint and re-run to include an AI-generated narrative.</div>',
-    }.get(source, "")
-
-    def _list(items: List[str]) -> str:
-        return "<ul>" + "".join(f"<li>{_e(i)}</li>" for i in items) + "</ul>"
-
-    steps_html = "".join(
-        f'<div class="step"><span class="step-num">{i+1}</span>{_e(s)}</div>'
-        for i, s in enumerate(next_steps)
-    )
-
-    return f"""
-    <section>
-        <h2>Assessment Summary</h2>
-        <p class="section-help">
-            <strong>Purpose:</strong> narrative explanation of readiness posture. &nbsp;
-            <strong>How to use:</strong> use for communication context; treat tabular sections as the source of truth for change decisions.
-        </p>
-        {source_note}
-        <p class="summary-status">{_e(status)}</p>
-        <div class="two-col">
-            <div>
-                <h3>&#10003; Strengths</h3>
-                {_list(strengths)}
-            </div>
-            <div>
-                <h3>&#9888; Areas to Improve</h3>
-                {_list(improvements)}
-            </div>
-        </div>
-        {'<h3>Recommended Next Steps</h3><div class="steps">' + steps_html + '</div>' if steps_html else ''}
-        {'<p class="confidence-note"><em>' + _e(limits) + '</em></p>' if limits else ''}
-    </section>"""
-
-
 def _render_key_metrics(data: Dict) -> str:
     summary = data.get("summary", {})
+    rapid_summary = data.get("rapid_config_summary", {})
     pf = data.get("path_filter", {})
     ap = data.get("acceleration_plan", {})
 
@@ -256,6 +211,7 @@ def _render_key_metrics(data: Dict) -> str:
         ("Trusted Publishers",    summary.get("trusted_publisher_count", 0), "Publishers your org has explicitly trusted"),
         ("Valid Certificates",    summary.get("valid_certificate_count", 0), "Files with valid digital signatures"),
         ("Active Endpoints",      summary.get("active_computer_count", 0),   "Machines that contributed data"),
+        ("Rapid Configs Active", f"{rapid_summary.get('enabled_rapid_configs', 0)}/{rapid_summary.get('configured_rapid_configs', 0)}", "Enforcement-enabled Rapid Configs out of total configured"),
         ("Safe Path Candidates",  pf.get("safe_binaries", 0),               "Files in system paths (not user-writable)"),
         ("Excluded (User Paths)", pf.get("excluded_user_writable", 0),       "Files in user-writable locations — excluded from auto-approval"),
     ]
@@ -263,6 +219,11 @@ def _render_key_metrics(data: Dict) -> str:
     cards = "".join(f"""
         <div class="metric-card">
             <div class="metric-value">{v:,}</div>
+            <div class="metric-label">{_e(l)}</div>
+            <div class="metric-desc">{_e(d)}</div>
+        </div>""" if isinstance(v, (int, float)) else f"""
+        <div class="metric-card">
+            <div class="metric-value">{_e(v)}</div>
             <div class="metric-label">{_e(l)}</div>
             <div class="metric-desc">{_e(d)}</div>
         </div>""" for l, v, d in metrics)
@@ -911,6 +872,8 @@ def _render_strategic_recommendations(data: Dict) -> str:
     rule_recommendations = strategic_recs.get("rule_recommendations", [])
     publisher_recommendations = strategic_recs.get("publisher_recommendations", [])
     strategic_roadmap = strategic_recs.get("strategic_roadmap", {})
+    rapid_config_recommendations = strategic_recs.get("rapid_config_recommendations", [])
+    prioritized_rapid_configs = strategic_recs.get("prioritized_rapid_config_names", [])
 
     # Render rules table
     rule_rows = "".join(f"""
@@ -979,17 +942,33 @@ def _render_strategic_recommendations(data: Dict) -> str:
         rule_section = f"""
         <h3 style="margin-top: 40px; margin-bottom: 15px;">Trusted Path Rule Recommendations</h3>
         <p style="margin-bottom: 15px;">Create these batch-approval rules to significantly improve readiness. Total estimated gain: <strong>{rule_total_gain:.1f}%</strong></p>
+        <div class="table-toolbar">
+            <div class="search-row">
+                <input id="rules-recommendations-search" class="search-input" type="search" placeholder="Search strategic rule recommendations..." oninput="setManagedTableSearch('rules-recommendations-table', this.value)">
+            </div>
+            <div class="pager-row">
+                <label class="pager-label" for="rules-recommendations-page-size">Rows per page</label>
+                <select id="rules-recommendations-page-size" class="pager-select" onchange="setManagedTablePageSize('rules-recommendations-table', this.value)">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                </select>
+                <button id="rules-recommendations-prev" class="pager-button" onclick="previousManagedTablePage('rules-recommendations-table')">Previous</button>
+                <button id="rules-recommendations-next" class="pager-button" onclick="nextManagedTablePage('rules-recommendations-table')">Next</button>
+                <span id="rules-recommendations-pager" class="pager-info"></span>
+            </div>
+        </div>
         <div class="table-wrap">
             <table id="rules-recommendations-table">
                 <thead>
                     <tr>
-                        <th>Rule Type</th>
-                        <th>Rule Name</th>
-                        <th>File Pattern</th>
-                        <th>Files Covered</th>
-                        <th>Priority</th>
-                        <th>Score Gain</th>
-                        <th>Details</th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 0, 'text')">Rule Type <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 1, 'text')">Rule Name <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 2, 'text')">File Pattern <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 3, 'number')">Files Covered <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 4, 'text')">Priority <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 5, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 6, 'text')">Details <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1003,15 +982,31 @@ def _render_strategic_recommendations(data: Dict) -> str:
         pub_section = f"""
         <h3 style="margin-top: 40px; margin-bottom: 15px;">Publisher Trust Recommendations</h3>
         <p style="margin-bottom: 15px;">Trust these publishers to bulk-approve all their current and future files. Total estimated gain: <strong>{pub_total_gain:.1f}%</strong></p>
+        <div class="table-toolbar">
+            <div class="search-row">
+                <input id="publishers-recommendations-search" class="search-input" type="search" placeholder="Search publisher recommendations..." oninput="setManagedTableSearch('publishers-recommendations-table', this.value)">
+            </div>
+            <div class="pager-row">
+                <label class="pager-label" for="publishers-recommendations-page-size">Rows per page</label>
+                <select id="publishers-recommendations-page-size" class="pager-select" onchange="setManagedTablePageSize('publishers-recommendations-table', this.value)">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                </select>
+                <button id="publishers-recommendations-prev" class="pager-button" onclick="previousManagedTablePage('publishers-recommendations-table')">Previous</button>
+                <button id="publishers-recommendations-next" class="pager-button" onclick="nextManagedTablePage('publishers-recommendations-table')">Next</button>
+                <span id="publishers-recommendations-pager" class="pager-info"></span>
+            </div>
+        </div>
         <div class="table-wrap">
             <table id="publishers-recommendations-table">
                 <thead>
                     <tr>
-                        <th>Publisher</th>
-                        <th>Files Signed</th>
-                        <th>Risk Level</th>
-                        <th>Score Gain</th>
-                        <th>Details</th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 0, 'text')">Publisher <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 1, 'number')">Files Signed <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 2, 'text')">Risk Level <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 3, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 4, 'text')">Details <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1019,6 +1014,18 @@ def _render_strategic_recommendations(data: Dict) -> str:
                 </tbody>
             </table>
         </div>"""
+
+    rapid_section = ""
+    if prioritized_rapid_configs:
+        prioritized_items = "".join(
+            f"<li>{_e(name)}</li>"
+            for name in prioritized_rapid_configs
+        ) or "<li>No Rapid Configs currently require attention before enforcement.</li>"
+
+        rapid_section = f"""
+        <h3 style="margin-top: 40px; margin-bottom: 15px;">Rapid Config Strategy</h3>
+        <p style="margin-bottom: 10px;">The following Rapid Configs are relevant to your environment but are not yet in enforcement mode. Validate in report-only first, add exceptions for any observed would-block behavior, then promote to enforcement.</p>
+        <ul>{prioritized_items}</ul>"""
 
     return f"""
     <section>
@@ -1050,6 +1057,7 @@ def _render_strategic_recommendations(data: Dict) -> str:
         <h3 style="margin-bottom: 20px;">Step-by-Step Roadmap</h3>
         {roadmap_steps}
 
+        {rapid_section}
         {rule_section}
         {pub_section}
         </div>
@@ -1252,17 +1260,7 @@ section h3 { font-size: 1rem; font-weight: 600; margin: 16px 0 8px; }
 .bar-track { background: #e9ecef; border-radius: 4px; height: 8px; overflow: hidden; }
 .bar-fill  { height: 100%; border-radius: 4px; transition: width .4s; }
 
-/* Summary status */
-.summary-status { font-size: 1.05rem; font-style: italic; margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 6px; }
-.confidence-note { margin-top: 16px; font-size: 0.82rem; color: #868e96; }
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } }
 ul { padding-left: 20px; } li { margin: 4px 0; }
-
-/* Steps */
-.steps { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
-.step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; background: #f0f7ff; border-radius: 6px; font-size: 0.9rem; }
-.step-num { background: #1a2b45; color: #fff; border-radius: 50%; min-width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; }
 
 /* Metric grid */
 .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
@@ -1573,7 +1571,7 @@ function toggle(id) {
     }
 }
 
-function showReportTab(tabId, buttonEl) {
+function showReportTab(tabId, buttonEl, syncHash) {
     var buttons = document.querySelectorAll('.report-tab-btn');
     var panels = document.querySelectorAll('.report-tab-panel');
 
@@ -1589,9 +1587,12 @@ function showReportTab(tabId, buttonEl) {
         panel.hidden = !isActive;
     });
 
-    if (window.location.hash !== '#' + tabId) {
+    var shouldSyncHash = syncHash !== false;
+    if (shouldSyncHash && window.location.hash !== '#' + tabId) {
         history.replaceState(null, '', '#' + tabId);
     }
+
+    window.scrollTo(0, 0);
 }
 
 function filterTable(decision) {
@@ -1799,6 +1800,13 @@ document.addEventListener('DOMContentLoaded', function() {
     sortTable('guardrails-table', 0, 'text');
     sortTable('audit-inputs-table', 0, 'text');
     sortTable('audit-publisher-table', 0, 'text');
+    sortTable('rules-recommendations-table', 5, 'number');
+    sortTable('publishers-recommendations-table', 3, 'number');
+    sortTable('cert-portfolio-table', 5, 'number');
+    sortTable('policy-scope-table', 4, 'number');
+    sortTable('recurring-events-table', 2, 'number');
+    sortTable('rapid-config-table', 0, 'text');
+    sortTable('endpoint-readiness-table', 2, 'number');
 
     registerManagedTable('candidates-table', {
         filterAttr: 'candidateType',
@@ -1835,20 +1843,77 @@ document.addEventListener('DOMContentLoaded', function() {
         prevButtonId: 'audit-publisher-prev',
         nextButtonId: 'audit-publisher-next'
     });
+    registerManagedTable('rules-recommendations-table', {
+        pageSize: 10,
+        pagerInfoId: 'rules-recommendations-pager',
+        prevButtonId: 'rules-recommendations-prev',
+        nextButtonId: 'rules-recommendations-next'
+    });
+    registerManagedTable('publishers-recommendations-table', {
+        pageSize: 10,
+        pagerInfoId: 'publishers-recommendations-pager',
+        prevButtonId: 'publishers-recommendations-prev',
+        nextButtonId: 'publishers-recommendations-next'
+    });
+    registerManagedTable('cert-portfolio-table', {
+        pageSize: 10,
+        pagerInfoId: 'cert-portfolio-pager',
+        prevButtonId: 'cert-portfolio-prev',
+        nextButtonId: 'cert-portfolio-next'
+    });
+    registerManagedTable('policy-scope-table', {
+        pageSize: 10,
+        pagerInfoId: 'policy-scope-pager',
+        prevButtonId: 'policy-scope-prev',
+        nextButtonId: 'policy-scope-next'
+    });
+    registerManagedTable('recurring-events-table', {
+        pageSize: 10,
+        pagerInfoId: 'recurring-events-pager',
+        prevButtonId: 'recurring-events-prev',
+        nextButtonId: 'recurring-events-next'
+    });
+    registerManagedTable('rapid-config-table', {
+        pageSize: 10,
+        pagerInfoId: 'rapid-config-pager',
+        prevButtonId: 'rapid-config-prev',
+        nextButtonId: 'rapid-config-next'
+    });
+    registerManagedTable('endpoint-readiness-table', {
+        pageSize: 10,
+        pagerInfoId: 'endpoint-readiness-pager',
+        prevButtonId: 'endpoint-readiness-prev',
+        nextButtonId: 'endpoint-readiness-next'
+    });
 
     applyDecisionTableState(true);
     applyRulesTableState(true);
+    applyManagedTableState('audit-inputs-table', true);
+    applyManagedTableState('audit-publisher-table', true);
+    applyManagedTableState('candidates-table', true);
+    applyManagedTableState('optimized-table', true);
+    applyManagedTableState('guardrails-table', true);
+    applyManagedTableState('rules-recommendations-table', true);
+    applyManagedTableState('publishers-recommendations-table', true);
+    applyManagedTableState('cert-portfolio-table', true);
+    applyManagedTableState('policy-scope-table', true);
+    applyManagedTableState('recurring-events-table', true);
+    applyManagedTableState('rapid-config-table', true);
+    applyManagedTableState('endpoint-readiness-table', true);
 
     var requestedTab = window.location.hash ? window.location.hash.slice(1) : '';
+    var shouldSyncInitialHash = false;
     var firstTab = document.querySelector('.report-tab-btn');
-    if (requestedTab && !document.getElementById(requestedTab)) {
+    if (requestedTab && document.getElementById(requestedTab)) {
+        shouldSyncInitialHash = true;
+    } else if (requestedTab) {
         requestedTab = '';
     }
     if (!requestedTab && firstTab) {
         requestedTab = firstTab.dataset.tabTarget || '';
     }
     if (requestedTab) {
-        showReportTab(requestedTab);
+        showReportTab(requestedTab, null, shouldSyncInitialHash);
     }
 });
 
@@ -2037,16 +2102,32 @@ def _render_certificate_portfolio(data: Dict) -> str:
         </p>
         <div id="cert-portfolio-detail" class="collapsible">
             <p><strong>Potential Score Gain:</strong> {_e(cert_analysis.get('total_potential_gain', '0'))}% | <strong>Guardrail Violations Detected:</strong> {_e(cert_analysis.get('violations_detected', '0'))}</p>
+            <div class="table-toolbar">
+                <div class="search-row">
+                    <input id="cert-portfolio-search" class="search-input" type="search" placeholder="Search certificates..." oninput="setManagedTableSearch('cert-portfolio-table', this.value)">
+                </div>
+                <div class="pager-row">
+                    <label class="pager-label" for="cert-portfolio-page-size">Rows per page</label>
+                    <select id="cert-portfolio-page-size" class="pager-select" onchange="setManagedTablePageSize('cert-portfolio-table', this.value)">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                    </select>
+                    <button id="cert-portfolio-prev" class="pager-button" onclick="previousManagedTablePage('cert-portfolio-table')">Previous</button>
+                    <button id="cert-portfolio-next" class="pager-button" onclick="nextManagedTablePage('cert-portfolio-table')">Next</button>
+                    <span id="cert-portfolio-pager" class="pager-info"></span>
+                </div>
+            </div>
             <div class="table-wrap">
-                <table>
+                <table id="cert-portfolio-table">
                     <thead>
                         <tr>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 0, 'number')">Certificate ID <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 1, 'text')">Issuer <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 2, 'number')">Files Covered <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 3, 'number')">Affected Computers <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 0, 'number')">Certificate ID <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 1, 'text')">Issuer <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 2, 'number')">Files Covered <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 3, 'number')">Affected Computers <span class="sort-indicator"></span></th>
                             <th>Valid Signature</th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 5, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 5, 'number')">Score Gain <span class="sort-indicator"></span></th>
                             <th>Risk Assessment</th>
                         </tr>
                     </thead>
@@ -2084,15 +2165,31 @@ def _render_policy_scope(data: Dict) -> str:
         </p>
         <div id="policy-scope-detail" class="collapsible">
             <p><strong>Unlock Potential:</strong> {_e(scope_analysis.get('unlock_potential', '0'))}% additional score gain</p>
+            <div class="table-toolbar">
+                <div class="search-row">
+                    <input id="policy-scope-search" class="search-input" type="search" placeholder="Search policy scope candidates..." oninput="setManagedTableSearch('policy-scope-table', this.value)">
+                </div>
+                <div class="pager-row">
+                    <label class="pager-label" for="policy-scope-page-size">Rows per page</label>
+                    <select id="policy-scope-page-size" class="pager-select" onchange="setManagedTablePageSize('policy-scope-table', this.value)">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                    </select>
+                    <button id="policy-scope-prev" class="pager-button" onclick="previousManagedTablePage('policy-scope-table')">Previous</button>
+                    <button id="policy-scope-next" class="pager-button" onclick="nextManagedTablePage('policy-scope-table')">Next</button>
+                    <span id="policy-scope-pager" class="pager-info"></span>
+                </div>
+            </div>
             <div class="table-wrap">
-                <table>
+                <table id="policy-scope-table">
                     <thead>
                         <tr>
                             <th>Rule ID</th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 1, 'number')">Files Affected <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 2, 'number')">Pilot Computers <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('policy-scope-table', 1, 'number')">Files Affected <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('policy-scope-table', 2, 'number')">Pilot Computers <span class="sort-indicator"></span></th>
                             <th>Risk Reduction</th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 4, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('policy-scope-table', 4, 'number')">Score Gain <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
@@ -2129,20 +2226,215 @@ def _render_recurring_events(data: Dict) -> str:
         </p>
         <div id="recurring-events-detail" class="collapsible">
             <p><strong>Estimated Unknown Reduction:</strong> {_e(event_analysis.get('unknown_reduction', '0'))} files</p>
+            <div class="table-toolbar">
+                <div class="search-row">
+                    <input id="recurring-events-search" class="search-input" type="search" placeholder="Search recurring event patterns..." oninput="setManagedTableSearch('recurring-events-table', this.value)">
+                </div>
+                <div class="pager-row">
+                    <label class="pager-label" for="recurring-events-page-size">Rows per page</label>
+                    <select id="recurring-events-page-size" class="pager-select" onchange="setManagedTablePageSize('recurring-events-table', this.value)">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                    </select>
+                    <button id="recurring-events-prev" class="pager-button" onclick="previousManagedTablePage('recurring-events-table')">Previous</button>
+                    <button id="recurring-events-next" class="pager-button" onclick="nextManagedTablePage('recurring-events-table')">Next</button>
+                    <span id="recurring-events-pager" class="pager-info"></span>
+                </div>
+            </div>
             <div class="table-wrap">
-                <table>
+                <table id="recurring-events-table">
                     <thead>
                         <tr>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 0, 'text')">Process <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 1, 'text')">File Path <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 2, 'number')">Occurrences <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 3, 'number')">Coverage <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable(this.parentElement.parentElement.parentElement, 4, 'number')">Reduction <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('recurring-events-table', 0, 'text')">Process <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('recurring-events-table', 1, 'text')">File Path <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('recurring-events-table', 2, 'number')">Occurrences <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('recurring-events-table', 3, 'number')">Coverage <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('recurring-events-table', 4, 'number')">Reduction <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
                 </table>
             </div>
+        </div>
+    </section>"""
+
+
+def _render_rapid_config_analysis(data: Dict) -> str:
+    """Render Rapid Config posture and recommendation section."""
+    analysis = data.get('rapid_config_analysis', {})
+    summary = analysis.get('summary', {})
+    configs = analysis.get('rapid_configs', [])
+    recommendations = analysis.get('recommendations', [])
+
+    if not analysis:
+        return ""
+
+    recommendation_items = ''.join(
+        f"<li><strong>{_e(item.get('priority', '').upper())}</strong>: {_e(item.get('title', ''))} - {_e(item.get('recommendation', ''))}</li>"
+        for item in recommendations
+    ) or "<li>No rapid-config-specific recommendations.</li>"
+
+    if configs:
+        rows = ''.join(f"""
+        <tr>
+            <td>{_e(c.get('name', ''))}</td>
+            <td>{_badge('Enabled' if c.get('enabled') else 'Disabled', 'success' if c.get('enabled') else 'secondary')}</td>
+            <td>{_badge('Relevant' if c.get('relevant_to_environment') else ('Not Relevant (Excluded)' if c.get('excluded_by_config') else 'Not Relevant'), 'success' if c.get('relevant_to_environment') else 'warning')}</td>
+            <td>{_e(c.get('relevance_reason', 'Relevant' if c.get('relevant_to_environment') else ('Excluded by config' if c.get('excluded_by_config') else 'OS mismatch')))}</td>
+            <td>{_badge('Broad' if c.get('broad_scope') else 'Narrow', 'warning' if c.get('broad_scope') else 'success')}</td>
+            <td>{_badge('Report' if c.get('mode') == 'report' else ('Block' if c.get('mode') == 'block' else 'Not Configured'), 'info' if c.get('mode') == 'report' else ('danger' if c.get('mode') == 'block' else 'secondary'))}</td>
+        </tr>""" for c in configs)
+
+        table_html = f"""
+        <div class="table-toolbar">
+            <div class="search-row">
+                <input id="rapid-config-search" class="search-input" type="search" placeholder="Search rapid configs..." oninput="setManagedTableSearch('rapid-config-table', this.value)">
+            </div>
+            <div class="pager-row">
+                <label class="pager-label" for="rapid-config-page-size">Rows per page</label>
+                <select id="rapid-config-page-size" class="pager-select" onchange="setManagedTablePageSize('rapid-config-table', this.value)">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                </select>
+                <button id="rapid-config-prev" class="pager-button" onclick="previousManagedTablePage('rapid-config-table')">Previous</button>
+                <button id="rapid-config-next" class="pager-button" onclick="nextManagedTablePage('rapid-config-table')">Next</button>
+                <span id="rapid-config-pager" class="pager-info"></span>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table id="rapid-config-table">
+                <thead>
+                    <tr>
+                        <th class="sortable-th" onclick="sortTable('rapid-config-table', 0, 'text')">Name <span class="sort-indicator"></span></th>
+                        <th>Enabled</th>
+                        <th class="sortable-th" onclick="sortTable('rapid-config-table', 2, 'text')">Environment Fit <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rapid-config-table', 3, 'text')">Relevance Reason <span class="sort-indicator"></span></th>
+                        <th>Scope <span class="tip tip-below" data-tooltip="Scope indicates whether the control appears narrowly targeted (preferred) or broad. Broad controls should stay in report-only until tuned with exceptions.">i</span></th>
+                        <th class="sortable-th" onclick="sortTable('rapid-config-table', 5, 'text')">Rollout Status <span class="sort-indicator"></span></th>
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>"""
+    else:
+        table_html = "<p>No Rapid Config entries were returned by available rule endpoints.</p>"
+
+    return f"""
+    <section>
+        <h2>Rapid Config Analysis
+            <button class="toggle-btn" onclick="toggle('rapid-config-detail')">Show detail &#9660;</button>
+        </h2>
+        <p class="section-help">
+            <strong>Purpose:</strong> assess rapid-config posture without changing policy state. &nbsp;
+            <strong>How to use:</strong> keep report-mode pilots for discovery, then promote stable low-noise configs to block mode with exceptions.
+        </p>
+        <div id="rapid-config-detail" class="collapsible">
+            <div class="metric-grid" style="margin-bottom: 16px;">
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('total_rapid_configs', 0))}</div><div class="metric-label">Total Rapid Configs</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('configured_rapid_configs', 0))}</div><div class="metric-label">Configured</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('enabled_rapid_configs', 0))}</div><div class="metric-label">Enforcement Enabled</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('report_mode_configs', 0))}</div><div class="metric-label">Report Mode</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('block_mode_configs', 0))}</div><div class="metric-label">Block Mode</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('not_configured_configs', 0))}</div><div class="metric-label">Not Configured</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('broad_scope_configs', 0))}</div><div class="metric-label">Broad Scope</div></div>
+                <div class="metric-card"><div class="metric-value">{float(summary.get('enabled_relevant_percent', 0.0)):.1f}%</div><div class="metric-label">Enabled Relevant Coverage</div></div>
+            </div>
+            {table_html}
+        </div>
+    </section>"""
+
+
+def _render_endpoint_readiness(data: Dict) -> str:
+    """Render endpoint-level high-enforcement pilot readiness."""
+    analysis = data.get('endpoint_readiness_analysis', {})
+    if not analysis:
+        return ""
+
+    summary = analysis.get('summary', {})
+    endpoints = analysis.get('top_ready_endpoints', [])
+    policy_buckets = analysis.get('policy_ready_buckets', {})
+    recommendations = analysis.get('recommendations', [])
+
+    if endpoints:
+        rows = ''.join(f"""
+        <tr>
+            <td>{_e(e.get('computer_name', ''))}</td>
+            <td>{_e(e.get('policy_name', 'Unassigned'))}</td>
+            <td>{_e(e.get('readiness_score', 0))}%</td>
+            <td>{_e(e.get('unapproved_events', 0))}</td>
+            <td>{_e(e.get('block_events', 0))}</td>
+            <td>{_e(e.get('recent_unapproved_7d', 0))}</td>
+            <td>{_badge('Ready' if e.get('ready_for_high_enforcement') else 'Not Ready', 'success' if e.get('ready_for_high_enforcement') else 'warning')}</td>
+            <td>{_e(e.get('recommendation', ''))}</td>
+        </tr>""" for e in endpoints)
+
+        table_html = f"""
+        <div class="table-toolbar">
+            <div class="search-row">
+                <input id="endpoint-readiness-search" class="search-input" type="search" placeholder="Search endpoint readiness..." oninput="setManagedTableSearch('endpoint-readiness-table', this.value)">
+            </div>
+            <div class="pager-row">
+                <label class="pager-label" for="endpoint-readiness-page-size">Rows per page</label>
+                <select id="endpoint-readiness-page-size" class="pager-select" onchange="setManagedTablePageSize('endpoint-readiness-table', this.value)">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                </select>
+                <button id="endpoint-readiness-prev" class="pager-button" onclick="previousManagedTablePage('endpoint-readiness-table')">Previous</button>
+                <button id="endpoint-readiness-next" class="pager-button" onclick="nextManagedTablePage('endpoint-readiness-table')">Next</button>
+                <span id="endpoint-readiness-pager" class="pager-info"></span>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table id="endpoint-readiness-table">
+                <thead>
+                    <tr>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 0, 'text')">Endpoint <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 1, 'text')">Policy <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 2, 'number')">Score <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 3, 'number')">Unapproved Events <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 4, 'number')">Block Events <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 5, 'number')">Recent (7d) <span class="sort-indicator"></span></th>
+                        <th>Status</th>
+                        <th>Recommendation</th>
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>"""
+    else:
+        table_html = "<p>No endpoint pilot candidates were identified with current conservative criteria.</p>"
+
+    policy_items = ''.join(
+        f"<li>{_e(policy)}: <strong>{_e(count)}</strong> ready endpoint(s)</li>"
+        for policy, count in sorted(policy_buckets.items(), key=lambda i: i[1], reverse=True)
+    ) or '<li>No policy buckets currently contain ready endpoints.</li>'
+
+    recommendation_items = ''.join(f"<li>{_e(item)}</li>" for item in recommendations) or '<li>No recommendations available.</li>'
+
+    return f"""
+    <section>
+        <h2>Endpoint Readiness for High Enforcement
+            <button class="toggle-btn" onclick="toggle('endpoint-readiness-detail')">Show detail &#9660;</button>
+        </h2>
+        <p class="section-help">
+            <strong>Purpose:</strong> identify endpoint pilot candidates using observed unapproved/block event behavior. &nbsp;
+            <strong>How to use:</strong> start pilots with ready endpoints grouped by policy before broad rollout.
+        </p>
+        <div id="endpoint-readiness-detail" class="collapsible">
+            <div class="metric-grid" style="margin-bottom: 16px;">
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('total_endpoints_evaluated', 0))}</div><div class="metric-label">Endpoints Evaluated</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('ready_endpoints', 0))}</div><div class="metric-label">Ready</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('near_ready_endpoints', 0))}</div><div class="metric-label">Near Ready</div></div>
+                <div class="metric-card"><div class="metric-value">{_e(summary.get('not_ready_endpoints', 0))}</div><div class="metric-label">Not Ready</div></div>
+            </div>
+            {table_html}
+            <h3 style="margin-top: 18px;">Ready Endpoints by Policy</h3>
+            <ul>{policy_items}</ul>
+            <h3 style="margin-top: 18px;">Recommendations</h3>
+            <ul>{recommendation_items}</ul>
         </div>
     </section>"""
 
@@ -2170,7 +2462,6 @@ def generate_html_report(data: Dict, output_path: str) -> None:
     hero = _render_hero(data)
     key_metrics = _render_key_metrics(data)
     score_audit = _render_score_audit(data)
-    llm_section = _render_llm_section(data)
     score_breakdown = _render_score_breakdown(data)
     optimized_plan = _render_optimized_plan(data)
     guardrails = _render_guardrails(data)
@@ -2180,6 +2471,8 @@ def generate_html_report(data: Dict, output_path: str) -> None:
     certificate_portfolio = _render_certificate_portfolio(data)
     policy_scope = _render_policy_scope(data)
     recurring_events = _render_recurring_events(data)
+    rapid_configs = _render_rapid_config_analysis(data)
+    endpoint_readiness = _render_endpoint_readiness(data)
     decisions_table = _render_decisions_table(data)
     rule_suggestions = _render_rule_suggestions(data)
     candidates = _render_candidates(data)
@@ -2189,14 +2482,14 @@ def generate_html_report(data: Dict, output_path: str) -> None:
         {
             "id": "overview",
             "title": "Overview",
-            "description": "Current posture, inventory baseline, scoring inputs, and the high-level narrative for this run.",
-            "sections": [key_metrics, llm_section, score_breakdown, score_audit],
+            "description": "Current posture, inventory baseline, and scoring inputs for this run.",
+            "sections": [key_metrics, score_breakdown, score_audit],
         },
         {
             "id": "action-plan",
             "title": "Action Plan",
             "description": "Prioritized rollout guidance to move the score with the least waste and the clearest operational sequence.",
-            "sections": [optimized_plan, strategic_recommendations, backlog_dashboard, staged_workflow],
+            "sections": [optimized_plan, strategic_recommendations, backlog_dashboard, staged_workflow, endpoint_readiness],
         },
         {
             "id": "approvals",
@@ -2208,7 +2501,7 @@ def generate_html_report(data: Dict, output_path: str) -> None:
             "id": "controls",
             "title": "Controls and Risk",
             "description": "Guardrails, manual review backlog, and scope-tuning tools to keep readiness gains from creating policy debt.",
-            "sections": [guardrails, certificate_portfolio, policy_scope, recurring_events, risks],
+            "sections": [guardrails, rapid_configs, certificate_portfolio, policy_scope, recurring_events, risks],
         },
     ])
 

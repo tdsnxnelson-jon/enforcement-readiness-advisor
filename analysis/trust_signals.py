@@ -673,9 +673,11 @@ class TrustSignalAnalyzer:
         parent_id = cert_info.get('parentCertificateId')
         visited = set()
 
-        while parent_id and parent_id not in visited and parent_id in cert_lookup:
-            visited.add(parent_id)
-            parent = cert_lookup[parent_id]
+        while parent_id and str(parent_id) not in visited:
+            visited.add(str(parent_id))
+            parent = cert_lookup.get(parent_id) or cert_lookup.get(str(parent_id))
+            if not parent:
+                break
 
             parent_subject = parent.get('subjectName') or parent.get('subject')
             if parent_subject and str(parent_subject).strip():
@@ -1035,19 +1037,43 @@ class TrustSignalAnalyzer:
             return {'certificates': [], 'top_by_coverage': [], 'guardrail_violations': []}
         
         # Build cert list with coverage
-        certs = isinstance(certificate_data, list) and certificate_data or []
-        cert_map = {c.get('id'): c for c in certs}
+        if isinstance(certificate_data, list):
+            certs = [c for c in certificate_data if isinstance(c, dict)]
+        elif isinstance(certificate_data, dict):
+            certs = [c for c in certificate_data.get('results', certificate_data.get('rows', [])) if isinstance(c, dict)]
+        else:
+            certs = []
+
+        cert_map: Dict[Any, Dict[str, Any]] = {}
+        for cert in certs:
+            cert_id = cert.get('id')
+            cert_map[cert_id] = cert
+            cert_map[str(cert_id)] = cert
+
+        def _as_bool(value: Any, default: bool = False) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {'true', '1', 'yes', 'y', 'valid'}:
+                    return True
+                if lowered in {'false', '0', 'no', 'n', 'invalid'}:
+                    return False
+            return default
         
         top_certs = []
         for cert_id, file_count in sorted(cert_coverage.items(), key=lambda x: x[1], reverse=True)[:15]:
-            cert = cert_map.get(cert_id, {'id': cert_id})
-            issuer = cert.get('issuer', 'Unknown')
+            cert = cert_map.get(cert_id) or cert_map.get(str(cert_id)) or {'id': cert_id}
+            issuer = self._resolve_certificate_issuer(cert, cert_map)
+            has_valid_signature = _as_bool(cert.get('hasValidSignature', cert.get('valid', False)), False)
             top_certs.append({
                 'id': cert_id,
                 'issuer': issuer,
                 'file_count': file_count,
                 'affected_computers': len(set(f.get('computerId') for f in file_catalog if f.get('certificateId') == cert_id)),
-                'has_valid_signature': cert.get('hasValidSignature', False),
+                'has_valid_signature': has_valid_signature,
                 'score_gain_if_trusted': min(0.05 * (file_count / len(file_catalog)), 0.15)
             })
         
@@ -1060,7 +1086,7 @@ class TrustSignalAnalyzer:
                 violations.append(f"Certificate {cert['id']} affects {cert['affected_computers']} computers (broad scope risk)")
         
         return {
-            'certificates': certs if isinstance(certificate_data, list) else [],
+            'certificates': certs,
             'top_by_coverage': top_certs,
             'guardrail_violations': violations,
             'total_potential_gain': sum(c['score_gain_if_trusted'] for c in top_certs),

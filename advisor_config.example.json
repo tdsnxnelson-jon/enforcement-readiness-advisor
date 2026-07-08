@@ -1,0 +1,31 @@
+{
+  "server": "https://your-cbserver.example.com",
+  "token": "REPLACE_WITH_API_TOKEN",
+  "verify_ssl": false,
+  "output": "enforcement_readiness_report.json",
+  "html_output": null,
+  "no_html": false,
+  "acceleration_mode": "conservative",
+  "max_rows": 5000,
+  "rapid_config": {
+    "excluded_configs": [
+      "Example Linux Baseline",
+      "name:Legacy Mac Monitor",
+      "id:12345",
+      "*Test*"
+    ]
+  },
+  "endpoint_readiness": {
+    "lookback_days": 7,
+    "min_ready_score": 80.0,
+    "near_ready_score": 60.0,
+    "max_block_events": 0,
+    "max_unapproved_events": 3,
+    "unapproved_penalty": 3.0,
+    "block_penalty": 5.0,
+    "recent_penalty": 4.0,
+    "max_unapproved_penalty": 60.0,
+    "max_block_penalty": 25.0,
+    "max_recent_penalty": 20.0
+  }
+}
