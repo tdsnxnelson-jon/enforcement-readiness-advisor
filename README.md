@@ -67,7 +67,7 @@ Config precedence is:
 | `--no-html` | `false` | Skip HTML report generation |
 | `--html` | `false` | Force HTML report generation (overrides config) |
 | `--acceleration-mode` | `conservative` | `conservative` (stricter thresholds) or `accelerated` (faster readiness lift) |
-| `--max-rows` | `5000` | Maximum rows fetched per collection |
+| `--max-rows` | `0` (no cap, fetch full dataset) | Set a positive value to cap collection at a partial sample |
 | `--verify-ssl` | `false` | Verify SSL certificates |
 | `--insecure` | `false` | Disable SSL verification (overrides config) |
 

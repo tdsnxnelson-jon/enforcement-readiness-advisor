@@ -374,6 +374,7 @@ def _render_optimized_plan(data: Dict) -> str:
             f"""
             <tr data-action-type=\"{_e(str(a.get('type', '')).replace('_', ' ').title())}\">
                 <td>{_e(a.get('target', ''))}</td>
+                <td>{_e(', '.join(a.get('platform_scope', ['Unknown'])) if isinstance(a.get('platform_scope', ['Unknown']), list) else a.get('platform_scope', 'Unknown'))}</td>
                 <td>{_e(str(a.get('type', '')).replace('_', ' ').title())}</td>
                 <td>{_e(a.get('net_new_files', a.get('files_to_approve', '—')))}</td>
                 <td>{_e(a.get('overlap_percent', '—'))}%</td>
@@ -423,11 +424,12 @@ def _render_optimized_plan(data: Dict) -> str:
                 <thead>
                     <tr>
                         <th class="sortable-th" onclick="sortTable('optimized-table', 0, 'text')">Target <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('optimized-table', 1, 'text')">Action Type <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('optimized-table', 2, 'number')">Net New Files <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('optimized-table', 3, 'number')">Overlap <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('optimized-table', 4, 'number')">Marginal Gain <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('optimized-table', 5, 'number')">Projected Score <span class="sort-indicator"></span></th>
+                        <th>Platform Scope</th>
+                        <th class="sortable-th" onclick="sortTable('optimized-table', 2, 'text')">Action Type <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('optimized-table', 3, 'number')">Net New Files <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('optimized-table', 4, 'number')">Overlap <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('optimized-table', 5, 'number')">Marginal Gain <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('optimized-table', 6, 'number')">Projected Score <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>{action_rows}</tbody>
@@ -448,12 +450,13 @@ def _render_guardrails(data: Dict) -> str:
             <td>{_badge(str(f.get('severity', '')).title(), 'danger' if f.get('severity') == 'high' else 'warning')}</td>
             <td>{_e(f.get('category', ''))}</td>
             <td>{_e(f.get('target', ''))}</td>
+            <td>{_e(', '.join(f.get('platform_scope', ['Unknown'])) if isinstance(f.get('platform_scope', ['Unknown']), list) else f.get('platform_scope', 'Unknown'))}</td>
             <td>{_e(f.get('message', ''))}</td>
         </tr>"""
         for f in findings
     )
     if not finding_rows:
-        finding_rows = '<tr><td colspan="4">No guardrail findings.</td></tr>'
+        finding_rows = '<tr><td colspan="5">No guardrail findings.</td></tr>'
 
     return f"""
     <section>
@@ -495,7 +498,8 @@ def _render_guardrails(data: Dict) -> str:
                         <th class="sortable-th" onclick="sortTable('guardrails-table', 0, 'text')">Severity <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('guardrails-table', 1, 'text')">Category <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('guardrails-table', 2, 'text')">Target <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('guardrails-table', 3, 'text')">Message <span class="sort-indicator"></span></th>
+                        <th>Platform Scope</th>
+                        <th class="sortable-th" onclick="sortTable('guardrails-table', 4, 'text')">Message <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>{finding_rows}</tbody>
@@ -695,6 +699,7 @@ def _render_candidates(data: Dict) -> str:
     rows = "".join(f"""
         <tr data-candidate-type="{_e(str(c.get('type','').replace('_', ' ').title()))}">
             <td>{_e(c.get('target',''))}</td>
+            <td>{_e(', '.join(c.get('platform_scope', ['Unknown'])) if isinstance(c.get('platform_scope', ['Unknown']), list) else c.get('platform_scope', 'Unknown'))}</td>
             <td>{_e(c.get('type','').replace('_', ' ').title())}</td>
             <td>{_e(c.get('files_to_approve', '—'))}</td>
             <td>{_e(c.get('readiness_gain_percent', '—'))}%</td>
@@ -737,12 +742,13 @@ def _render_candidates(data: Dict) -> str:
                 <thead>
                     <tr>
                         <th class="sortable-th" onclick="sortTable('candidates-table', 0, 'text')">Target <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 1, 'text')">Action Type <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 2, 'number')">Files Approved <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 3, 'number')">Gain <span class="tip tip-below" data-tooltip="Actual percentage-point increase from the current readiness score after approving this candidate by itself. Gains are not additive across rows.">i</span> <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 4, 'number')">Confidence <span class="tip tip-below" data-tooltip="Heuristic confidence based on risk score, digital signature validity, certificate issuer trust, and file prevalence across endpoints. Not a guarantee of safety.">i</span> <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 5, 'text')">Priority <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('candidates-table', 6, 'text')">Rationale <span class="sort-indicator"></span></th>
+                        <th>Platform Scope</th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 2, 'text')">Action Type <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 3, 'number')">Files Approved <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 4, 'number')">Gain <span class="tip tip-below" data-tooltip="Actual percentage-point increase from the current readiness score after approving this candidate by itself. Gains are not additive across rows.">i</span> <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 5, 'number')">Confidence <span class="tip tip-below" data-tooltip="Heuristic confidence based on risk score, digital signature validity, certificate issuer trust, and file prevalence across endpoints. Not a guarantee of safety.">i</span> <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 6, 'text')">Priority <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('candidates-table', 7, 'text')">Rationale <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>{rows}</tbody>
@@ -874,12 +880,14 @@ def _render_strategic_recommendations(data: Dict) -> str:
     strategic_roadmap = strategic_recs.get("strategic_roadmap", {})
     rapid_config_recommendations = strategic_recs.get("rapid_config_recommendations", [])
     prioritized_rapid_configs = strategic_recs.get("prioritized_rapid_config_names", [])
+    platform_coverage = strategic_recs.get("platform_coverage", [])
 
     # Render rules table
     rule_rows = "".join(f"""
         <tr>
             <td>{_e(r.get('rule_type', ''))}</td>
             <td>{_e(r.get('rule_name', ''))}</td>
+            <td>{_e(', '.join(r.get('platform_scope', ['Unknown'])) if isinstance(r.get('platform_scope', ['Unknown']), list) else r.get('platform_scope', 'Unknown'))}</td>
             <td class="path-cell">{_e(r.get('file_pattern', ''))}</td>
             <td>{r.get('estimated_files_covered', 0)}</td>
             <td>{_badge(r.get('priority', 'MEDIUM'), 'info')}</td>
@@ -894,6 +902,7 @@ def _render_strategic_recommendations(data: Dict) -> str:
         <tr>
             <td>{_e(p.get('publisher_name', ''))}</td>
             <td>{p.get('files_signed', 0)}</td>
+            <td>{_e(', '.join(p.get('platform_scope', ['Unknown'])) if isinstance(p.get('platform_scope', ['Unknown']), list) else p.get('platform_scope', 'Unknown'))}</td>
             <td>{_badge(p.get('risk_level', 'MEDIUM'), 'warning')}</td>
             <td>{p.get('estimated_score_gain', 0):.1f}%</td>
             <td><details style="cursor:pointer"><summary>View</summary><p><strong>Rationale:</strong> {_e(p.get('rationale', ''))}</p><p><strong>Recommendation:</strong> {_e(p.get('recommendation', ''))}</p></details></td>
@@ -964,11 +973,12 @@ def _render_strategic_recommendations(data: Dict) -> str:
                     <tr>
                         <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 0, 'text')">Rule Type <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 1, 'text')">Rule Name <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 2, 'text')">File Pattern <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 3, 'number')">Files Covered <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 4, 'text')">Priority <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 5, 'number')">Score Gain <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 6, 'text')">Details <span class="sort-indicator"></span></th>
+                        <th>Platform Scope</th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 3, 'text')">File Pattern <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 4, 'number')">Files Covered <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 5, 'text')">Priority <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 6, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('rules-recommendations-table', 7, 'text')">Details <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1004,9 +1014,10 @@ def _render_strategic_recommendations(data: Dict) -> str:
                     <tr>
                         <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 0, 'text')">Publisher <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 1, 'number')">Files Signed <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 2, 'text')">Risk Level <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 3, 'number')">Score Gain <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 4, 'text')">Details <span class="sort-indicator"></span></th>
+                        <th>Platform Scope</th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 3, 'text')">Risk Level <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 4, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('publishers-recommendations-table', 5, 'text')">Details <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1051,6 +1062,13 @@ def _render_strategic_recommendations(data: Dict) -> str:
                 <strong>Total Estimated Effort:</strong> {_e(total_effort)}<br>
                 <strong>Success Criteria:</strong> {_e(success_criteria)}
             </div>
+        </div>
+        <h3 style="margin-top: 30px; margin-bottom: 15px;">Platform Evidence Coverage</h3>
+        <div class="table-wrap">
+            <table id="platform-coverage-table">
+                <thead><tr><th>Platform</th><th>Active Endpoints</th><th>Endpoints With Activity</th><th>Recommendation</th></tr></thead>
+                <tbody>{''.join(f"<tr><td>{_e(item.get('platform', ''))}</td><td>{_e(item.get('endpoint_count', 0))}</td><td>{_e(item.get('endpoints_with_activity', 0))}</td><td>{_e(item.get('recommendation', ''))}</td></tr>" for item in platform_coverage)}</tbody>
+            </table>
         </div>
 
         <div id="strategic-recs-detail" class="collapsible">
@@ -2076,16 +2094,23 @@ function showApprovalTab(tabName) {
 def _render_certificate_portfolio(data: Dict) -> str:
     """Render certificate portfolio optimization section."""
     cert_analysis = data.get('certificate_portfolio_analysis', {})
-    if not cert_analysis or not cert_analysis.get('top_certificates'):
+    if not cert_analysis or not cert_analysis.get('top_certificates') and not cert_analysis.get('platform_reviews'):
         return ""
     
     certs = cert_analysis.get('top_certificates', [])
+    coverage_gaps = cert_analysis.get('coverage_gaps', [])
+    platform_reviews = cert_analysis.get('platform_reviews', [])
+    review_text = '; '.join(
+        f"{item.get('platform_scope', ['Unknown'])[0]} evidence requires endpoint, signer, certificate, and publisher review before approval."
+        for item in platform_reviews
+    )
     rows = "".join(f"""
         <tr>
             <td>{_e(c.get('certificate_id', ''))}</td>
             <td class="path-cell">{_e(c.get('issuer', 'Unknown')[:60])}</td>
             <td>{_e(c.get('files_covered', '0'))}</td>
             <td>{_e(c.get('affected_computers', '0'))}</td>
+            <td>{_e(', '.join(c.get('platform_scope', ['Unknown'])) if isinstance(c.get('platform_scope', ['Unknown']), list) else c.get('platform_scope', 'Unknown'))}</td>
             <td>{_badge('Valid' if c.get('valid_signature') else 'Invalid', 'success' if c.get('valid_signature') else 'danger')}</td>
             <td>{_e(c.get('projected_score_gain', '0'))}%</td>
             <td>{_badge('No Flags' if not c.get('risk_flags') else 'Review', 'info')}</td>
@@ -2102,6 +2127,8 @@ def _render_certificate_portfolio(data: Dict) -> str:
         </p>
         <div id="cert-portfolio-detail" class="collapsible">
             <p><strong>Potential Score Gain:</strong> {_e(cert_analysis.get('total_potential_gain', '0'))}% | <strong>Guardrail Violations Detected:</strong> {_e(cert_analysis.get('violations_detected', '0'))}</p>
+            {f'<p><strong>Platform Coverage Gaps:</strong> {_e("; ".join(coverage_gaps))}</p>' if coverage_gaps else ''}
+            {f'<p><strong>Review Only:</strong> {_e(review_text)}</p>' if review_text else ''}
             <div class="table-toolbar">
                 <div class="search-row">
                     <input id="cert-portfolio-search" class="search-input" type="search" placeholder="Search certificates..." oninput="setManagedTableSearch('cert-portfolio-table', this.value)">
@@ -2126,8 +2153,9 @@ def _render_certificate_portfolio(data: Dict) -> str:
                             <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 1, 'text')">Issuer <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 2, 'number')">Files Covered <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 3, 'number')">Affected Computers <span class="sort-indicator"></span></th>
+                            <th>Platform Scope</th>
                             <th>Valid Signature</th>
-                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 5, 'number')">Score Gain <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('cert-portfolio-table', 6, 'number')">Score Gain <span class="sort-indicator"></span></th>
                             <th>Risk Assessment</th>
                         </tr>
                     </thead>
@@ -2209,7 +2237,7 @@ def _render_recurring_events(data: Dict) -> str:
     rows = "".join(f"""
         <tr>
             <td>{_e(r.get('process_name', 'unknown')[:40])}</td>
-            <td class="path-cell">{_e(r.get('file_path', 'N/A')[:60])}</td>
+            <td class="path-cell">{_e(str(r.get('file_path') or 'N/A')[:60])}</td>
             <td>{_e(r.get('occurrences', '0'))}</td>
             <td>{_e(r.get('coverage_percent', '0'))}%</td>
             <td>{_e(r.get('estimated_reduction', '0'))}</td>
@@ -2353,7 +2381,7 @@ def _render_endpoint_readiness(data: Dict) -> str:
         return ""
 
     summary = analysis.get('summary', {})
-    endpoints = analysis.get('top_ready_endpoints', [])
+    endpoints = analysis.get('endpoint_scores', [])
     policy_buckets = analysis.get('policy_ready_buckets', {})
     recommendations = analysis.get('recommendations', [])
 
@@ -2363,7 +2391,7 @@ def _render_endpoint_readiness(data: Dict) -> str:
             <td>{_e(e.get('computer_name', ''))}</td>
             <td>{_e(e.get('policy_name', 'Unassigned'))}</td>
             <td>{_e(e.get('readiness_score', 0))}%</td>
-            <td>{_e(e.get('unapproved_events', 0))}</td>
+            <td>{_e(e.get('unapproved_activity', e.get('unapproved_events', 0)))}</td>
             <td>{_e(e.get('block_events', 0))}</td>
             <td>{_e(e.get('recent_unapproved_7d', 0))}</td>
             <td>{_badge('Ready' if e.get('ready_for_high_enforcement') else 'Not Ready', 'success' if e.get('ready_for_high_enforcement') else 'warning')}</td>
@@ -2394,7 +2422,7 @@ def _render_endpoint_readiness(data: Dict) -> str:
                         <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 0, 'text')">Endpoint <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 1, 'text')">Policy <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 2, 'number')">Score <span class="sort-indicator"></span></th>
-                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 3, 'number')">Unapproved Events <span class="sort-indicator"></span></th>
+                        <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 3, 'number')">Unapproved Files / Events <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 4, 'number')">Block Events <span class="sort-indicator"></span></th>
                         <th class="sortable-th" onclick="sortTable('endpoint-readiness-table', 5, 'number')">Recent (7d) <span class="sort-indicator"></span></th>
                         <th>Status</th>

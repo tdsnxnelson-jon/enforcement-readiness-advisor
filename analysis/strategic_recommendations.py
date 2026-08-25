@@ -45,7 +45,17 @@ class StrategicRecommendationEngine:
             path = str(decision.get("file_path", "")).lower()
             
             # Categorize by path pattern
-            if "\\windows\\system32\\" in path:
+            if "/applications/" in path:
+                patterns["mac_applications"].append(decision)
+            elif "/library/" in path:
+                patterns["mac_library"].append(decision)
+            elif "/usr/local/" in path:
+                patterns["unix_usr_local"].append(decision)
+            elif "/users/" in path:
+                patterns["mac_user"].append(decision)
+            elif any(path.startswith(prefix) for prefix in ["/usr/", "/opt/", "/var/lib/", "/home/", "/etc/", "/bin/", "/sbin/", "/lib/"]):
+                patterns["linux_system"].append(decision)
+            elif "\\windows\\system32\\" in path:
                 patterns["system32"].append(decision)
             elif "\\windows\\system32\\drivers" in path:
                 patterns["drivers"].append(decision)
@@ -74,6 +84,45 @@ class StrategicRecommendationEngine:
         
         patterns = self._extract_path_patterns(file_decisions)
         
+        mac_recommendations = [
+            ("mac_applications", "macOS Applications Approval Review", "/Applications/*", "Review recurring application binaries installed under /Applications. Prefer signer or publisher-scoped approval and keep unsigned or user-writable content out of broad rules.", "Policy > Rules > New > Review macOS application scope", ["Limit to named application paths", "Verify signing identity and notarization", "Pilot in report-only mode first"]),
+            ("mac_library", "macOS System Library Approval Review", "/Library/*", "Review recurring files under /Library and approve only known vendor components with verified signing identities.", "Policy > Rules > New > Review macOS Library scope", ["Restrict to the specific vendor subdirectory", "Verify signing identity", "Monitor changes after approval"]),
+            ("unix_usr_local", "Unix-like Local Tooling Approval Review", "/usr/local/*", "Review locally installed tools under /usr/local. This location is shared by macOS and Linux, so use narrow file or signer approvals.", "Policy > Rules > New > Review /usr/local scope", ["Require a named tool or signer", "Do not approve the entire directory", "Validate ownership and write permissions"]),
+        ]
+        for key, name, file_pattern, rationale, console_action, safety_checks in mac_recommendations:
+            if patterns.get(key):
+                files = patterns[key]
+                recommendations.append(asdict(RuleRecommendation(
+                    rule_type="macOS Scoped Approval",
+                    rule_name=name,
+                    file_pattern=file_pattern,
+                    rationale=f"{rationale} Evidence currently covers {len(files)} file decision(s).",
+                    estimated_files_covered=len(files),
+                    estimated_score_gain=0.0,
+                    safety_checks=safety_checks,
+                    console_action=console_action,
+                    priority="HIGH" if key != "unix_usr_local" else "MEDIUM"
+                )))
+
+        if patterns.get("linux_system"):
+            files = patterns["linux_system"]
+            recommendations.append(asdict(RuleRecommendation(
+                rule_type="Linux Scoped Approval",
+                rule_name="Linux System and Application Approval Review",
+                file_pattern="/usr/*, /opt/*, /var/lib/*, /etc/*",
+                rationale=f"Review {len(files)} Linux file decision(s) from system and application paths. Prefer package, signer, or named-file approvals over broad directory trust.",
+                estimated_files_covered=len(files),
+                estimated_score_gain=0.0,
+                safety_checks=[
+                    "Limit scope to the specific package or vendor subdirectory",
+                    "Verify package provenance and signing key",
+                    "Do not approve writable user or temporary paths",
+                    "Pilot in report-only mode first"
+                ],
+                console_action="Policy > Rules > New > Review Linux package and application scope",
+                priority="HIGH"
+            )))
+
         # Rule 1: System32 binaries (include FOLLOW_COMPANY_POLICY, CONSIDER_LOCAL_APPROVAL, etc.)
         if patterns.get("system32"):
             files = patterns["system32"]
@@ -203,8 +252,29 @@ class StrategicRecommendationEngine:
                 estimated_score_gain=0.5,
                 recommendation=f"Research '{publisher}' online. If reputable, trust via Policy > Publishers > Trust. ~0.5% improvement per publisher."
             )))
+            recommendations[-1]['platform_scope'] = self._platforms_for_decisions(
+                [decision for decision in file_decisions if decision.get('publisher') == publisher]
+            )
         
         return recommendations
+
+    def _platforms_for_decisions(self, decisions: List[Dict[str, Any]]) -> List[str]:
+        """Infer recommendation scope from the paths represented by file decisions."""
+        platforms = set()
+        for decision in decisions:
+            path = str(decision.get('file_path') or '').lower()
+            if path.startswith('/'):
+                if any(token in path for token in ['/applications/', '/library/', '/system/', '/users/']):
+                    platforms.add('macOS')
+                elif '/usr/local/' in path:
+                    platforms.add('Unix-like')
+                else:
+                    platforms.add('Linux')
+            elif '\\' in path:
+                platforms.add('Windows')
+            else:
+                platforms.add('Unknown')
+        return sorted(platforms)
 
     def generate_strategic_roadmap(
         self,

@@ -1,6 +1,7 @@
 # Data Collectors for CB App Control API
 # Each collector focuses on a specific data type for enforcement readiness
 
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 from .api_client import CBApiClient
@@ -18,9 +19,10 @@ class BaseCollector:
     
     def collect(self, filters: Optional[List[str]] = None, 
                 facets: Optional[List[str]] = None,
-                rows: int = 1000) -> Dict:
-        """Collect data from the endpoint."""
-        return self.api_client.query(self.endpoint, filters, facets, rows)
+                rows: int = 1000) -> List[Dict]:
+        """Collect data from the endpoint, paginating so results aren't truncated
+        to a single page when the endpoint has more rows than fit in one request."""
+        return self.api_client.query_all(self.endpoint, filters, facets, max_rows=rows)
     
     def collect_facet(self, facet_field: str, 
                      filters: Optional[List[str]] = None,
@@ -240,27 +242,100 @@ class EventCollector(BaseCollector):
     def __init__(self, api_client: CBApiClient):
         super().__init__(api_client, 'event')
 
-    def get_new_unapproved_file_events(self, rows: int = 1000) -> Dict:
-        """Get events related to new unapproved files with resilient filter fallback."""
-        candidate_filters = [
-            ['subtype:NEW_UNAPPROVED_FILE_TO_COMPUTER', 'fileState:UNAPPROVED'],
-            ['eventType:NEW_UNAPPROVED_FILE_TO_COMPUTER'],
-            ['description:*New Unapproved File to Computer*'],
-            ['fileState:UNAPPROVED'],
-        ]
-
-        last_error: Optional[Exception] = None
+    def _get_event_history(self, candidate_filters: List[List[str]], rows: int, lookback_days: int) -> Dict:
+        """Page through a bounded event history, preserving only the requested event scope."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, lookback_days))
+        # rows only sets the per-page size here; pagination always runs to exhaustion
+        # within the lookback window. rows <= 0 ("no cap") falls back to a full page.
+        page_size = min(rows, 1000) if rows and rows > 0 else 1000
+        collected: List[Dict] = []
+        query_succeeded = False
         for filters in candidate_filters:
             try:
-                return self.collect(filters=filters, rows=rows)
+                seen_pages = set()
+                start = 0
+                while True:
+                    params = {'offset': start}
+                    if filters:
+                        params['filter'] = ';'.join(filters)
+                    page = self.api_client.get(self.endpoint, params=params, rows=page_size)
+                    page_rows = page if isinstance(page, list) else page.get('results', [])
+                    if not isinstance(page_rows, list):
+                        page_rows = []
+                    page_signature = tuple(str(row.get('id')) for row in page_rows)
+                    if page_signature in seen_pages:
+                        logger.warning('Event API repeated a page; stopping pagination to prevent duplicate requests.')
+                        break
+                    seen_pages.add(page_signature)
+                    for event in page_rows:
+                        timestamp = event.get('eventTime') or event.get('timestamp') or event.get('date') or event.get('createdTime')
+                        try:
+                            parsed = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+                        except (TypeError, ValueError):
+                            parsed = None
+                        if parsed is None or parsed >= cutoff:
+                            collected.append(event)
+                    if len(page_rows) < page_size:
+                        break
+                    start += len(page_rows)
+                query_succeeded = True
+                return {'results': collected, 'lookback_days': lookback_days, 'query_succeeded': query_succeeded}
             except Exception as exc:
-                last_error = exc
                 logger.debug(f"Event filter failed {filters}: {exc}")
+        return {'results': collected, 'lookback_days': lookback_days, 'query_succeeded': query_succeeded}
 
-        if last_error:
-            raise last_error
+    def get_event_history(self, rows: int = 5000, lookback_days: int = 60) -> Dict:
+        """Fetch the complete event history for the configured analysis window."""
+        return self._get_event_history([[]], rows, lookback_days)
 
-        return {'results': []}
+    def get_new_unapproved_file_events(self, rows: int = 5000, lookback_days: int = 60, computer_ids: Optional[List[str]] = None, event_history: Optional[Dict] = None) -> Dict:
+        """Get all new unapproved-file-on-computer events in the analysis window."""
+        history = event_history or self.get_event_history(rows, lookback_days)
+        return self._filter_unapproved_events(history, lookback_days, computer_ids)
+
+    def _filter_unapproved_events(self, history: Dict, lookback_days: int, computer_ids: Optional[List[str]]) -> Dict:
+        """Filter a shared event history to new unapproved files on computers."""
+        events = []
+        allowed_ids = {str(computer_id) for computer_id in computer_ids or []}
+        for event in history.get('results', []):
+            subtype_name = str(event.get('subtypeName', '')).lower()
+            description = str(event.get('description', '')).lower()
+            if 'new file on network' in subtype_name:
+                continue
+            is_unapproved_computer_file = (
+                'new unapproved file' in subtype_name and 'computer' in subtype_name
+            ) or (
+                'new unapproved file' in description and 'computer' in description
+            )
+            if is_unapproved_computer_file and (not allowed_ids or str(event.get('computerId')) in allowed_ids):
+                events.append(event)
+        return {
+            'results': events,
+            'lookback_days': lookback_days,
+            'collection_mode': 'shared-history-local-filter',
+        }
+
+    def get_block_events(self, rows: int = 5000, lookback_days: int = 60, computer_ids: Optional[List[str]] = None, event_history: Optional[Dict] = None) -> Dict:
+        """Get block events from the complete history without including network-file events."""
+        history = event_history or self.get_event_history(rows, lookback_days)
+        return self._filter_block_events(history, lookback_days, computer_ids)
+
+    def _filter_block_events(self, history: Dict, lookback_days: int, computer_ids: Optional[List[str]]) -> Dict:
+        """Filter a shared event history to block events."""
+        block_events = []
+        allowed_ids = {str(computer_id) for computer_id in computer_ids or []}
+        for event in history.get('results', []):
+            if (
+                'new file on network' not in str(event.get('subtypeName', '')).lower()
+                and ('block' in str(event.get('subtypeName', '')).lower() or 'blocked' in str(event.get('description', '')).lower())
+                and (not allowed_ids or str(event.get('computerId')) in allowed_ids)
+            ):
+                block_events.append(event)
+        return {
+            'results': block_events,
+            'lookback_days': lookback_days,
+            'collection_mode': 'shared-history-local-filter',
+        }
 
 
 class SoftwareRuleCollector(BaseCollector):
@@ -374,7 +449,8 @@ class SoftwareRuleCollector(BaseCollector):
 
     def _query_endpoint_soft(self, endpoint: str, rows: int) -> Tuple[Optional[int], Optional[Dict], Optional[str]]:
         """Query endpoint without raising/logging hard errors for expected fallback statuses."""
-        params = {'rows': rows, 'start': 0}
+        # App Control REST API pagination params are 'limit'/'offset', not 'rows'/'start'.
+        params = {'limit': rows, 'offset': 0}
         url = self.api_client._build_url(endpoint, params)
 
         try:
@@ -412,9 +488,11 @@ class SoftwareRuleCollector(BaseCollector):
 class EnforcementReadinessCollector:
     """Main collector that orchestrates all data collection for enforcement readiness."""
     
-    def __init__(self, api_client: CBApiClient, max_rows: int = 5000):
+    def __init__(self, api_client: CBApiClient, max_rows: int = 0, lookback_days: int = 60):
         self.api_client = api_client
+        # max_rows <= 0 means "no cap" - fetch the full dataset via pagination.
         self.max_rows = max_rows
+        self.lookback_days = lookback_days
         self.file_catalog = FileCatalogCollector(api_client)
         self.certificate = CertificateCollector(api_client)
         self.publisher = PublisherCollector(api_client)
@@ -444,19 +522,33 @@ class EnforcementReadinessCollector:
         logger.info("Collecting trust signals for enforcement readiness...")
 
         # Check catalog size upfront so we can warn before analysis begins.
+        # rows=0 always means "fetch everything" here (used purely to get an exact count).
         catalog_total = self._get_count(self.file_catalog.get_unknown_binaries(rows=0))
-        if catalog_total > self.max_rows:
+        capped = self.max_rows > 0
+        if capped and catalog_total > self.max_rows:
             logger.warning(
                 f"File catalog contains {catalog_total:,} unknown binaries but analysis "
                 f"is capped at {self.max_rows:,} rows. Results represent a partial sample. "
                 f"Use --max-rows to increase the limit."
             )
-        else:
+        elif capped:
             logger.info(f"File catalog: {catalog_total:,} unknown binaries (within {self.max_rows:,} row cap)")
+        else:
+            logger.info(f"File catalog: {catalog_total:,} unknown binaries (no row cap, fetching full catalog)")
 
+        active_computers = self.computer.get_active_computers(rows=self.max_rows)
+        active_computer_rows = active_computers if isinstance(active_computers, list) else active_computers.get('results', [])
+        active_computer_ids = [
+            str(computer.get('id')) for computer in active_computer_rows
+            if isinstance(computer, dict) and computer.get('id') is not None
+        ]
+        event_history = self.event.get_event_history(rows=self.max_rows, lookback_days=self.lookback_days)
+        all_catalog_files = self.file_catalog.collect(rows=self.max_rows)
+        all_catalog_rows = all_catalog_files if isinstance(all_catalog_files, list) else []
         trust_signals = {
-            'unknown_binaries': self.file_catalog.get_unknown_binaries(rows=self.max_rows),
-            'approved_binaries': self.file_catalog.get_approved_binaries(rows=self.max_rows),
+            'catalog_files': all_catalog_rows,
+            'unknown_binaries': [row for row in all_catalog_rows if row.get('effectiveState') == 'Unapproved'],
+            'approved_binaries': [row for row in all_catalog_rows if row.get('effectiveState') == 'Approved'],
             'trusted_publishers': self.publisher.get_trusted_publishers(rows=self.max_rows),
             'blocked_publishers': self.publisher.get_blocked_publishers(rows=self.max_rows),
             'all_publishers': self.publisher.get_all_by_reputation(rows=self.max_rows),
@@ -464,17 +556,22 @@ class EnforcementReadinessCollector:
             'invalid_certificates': self.certificate.get_invalid_certificates(rows=self.max_rows),
             'all_certificates': self.certificate.get_all_certificates(rows=self.max_rows),
             'file_prevalence': self.file_instance.get_file_prevalence(rows=self.max_rows),
-            'active_computers': self.computer.get_active_computers(rows=self.max_rows),
+            'active_computers': active_computers,
+            'all_events': event_history,
             'new_unapproved_events': self._safe_collect(
-                lambda: self.event.get_new_unapproved_file_events(rows=self.max_rows),
+                lambda: self.event.get_new_unapproved_file_events(rows=self.max_rows, lookback_days=self.lookback_days, computer_ids=active_computer_ids, event_history=event_history),
                 'event'
+            ),
+            'block_events': self._safe_collect(
+                lambda: self.event.get_block_events(rows=self.max_rows, lookback_days=self.lookback_days, computer_ids=active_computer_ids, event_history=event_history),
+                'block event'
             ),
             'software_rules': self._safe_collect(
                 lambda: self.software_rule.get_all_rules(rows=self.max_rows),
                 'softwareRule'
             ),
             'catalog_total': catalog_total,
-            'catalog_sampled': catalog_total > self.max_rows,
+            'catalog_sampled': capped and catalog_total > self.max_rows,
         }
 
         logger.info(f"Collected trust signals from {len(trust_signals)} sources")

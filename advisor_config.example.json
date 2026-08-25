@@ -6,7 +6,7 @@
   "html_output": null,
   "no_html": false,
   "acceleration_mode": "conservative",
-  "max_rows": 5000,
+  "max_rows": 0,
   "rapid_config": {
     "excluded_configs": [
       "Example Linux Baseline",
@@ -16,7 +16,7 @@
     ]
   },
   "endpoint_readiness": {
-    "lookback_days": 7,
+    "lookback_days": 60,
     "min_ready_score": 80.0,
     "near_ready_score": 60.0,
     "max_block_events": 0,

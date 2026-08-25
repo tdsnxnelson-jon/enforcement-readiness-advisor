@@ -12,7 +12,7 @@ import logging
 import sys
 import fnmatch
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Add project root to path
 import os
@@ -127,6 +127,8 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
 
     for candidate in acceleration_candidates:
         candidate_type = candidate.get('type', 'unknown')
+        if candidate.get('review_only') or candidate_type == 'platform_evidence_review':
+            continue
         target = str(candidate.get('target', ''))
         files_to_approve = int(candidate.get('files_to_approve', 0) or 0)
         confidence = float(candidate.get('confidence_percent', 0.0) or 0.0)
@@ -136,6 +138,7 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
                 'severity': 'high',
                 'category': 'broad_approval_scope',
                 'target': target,
+                'platform_scope': candidate.get('platform_scope', [_candidate_platform(candidate)]),
                 'message': f'{candidate_type} affects {files_to_approve} files; apply to pilot policy first.'
             })
 
@@ -144,6 +147,7 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
                 'severity': 'medium',
                 'category': 'low_confidence',
                 'target': target,
+                'platform_scope': candidate.get('platform_scope', [_candidate_platform(candidate)]),
                 'message': f'{candidate_type} confidence is {confidence}%; require manual review before approval.'
             })
 
@@ -152,10 +156,13 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
                 'severity': 'high',
                 'category': 'wildcard_target',
                 'target': target,
+                'platform_scope': candidate.get('platform_scope', [_candidate_platform(candidate)]),
                 'message': 'Wildcard approval target detected; narrow scope to known signer or publisher.'
             })
 
     for rule in rule_suggestions.get('recommended_rules', rule_suggestions.get('candidates', [])):
+        if rule.get('rule_type') == 'Platform Evidence Review':
+            continue
         file_pattern = str(rule.get('file_pattern', ''))
         process_pattern = str(rule.get('process_pattern', ''))
         user_scope = str(rule.get('user_scope', ''))
@@ -165,6 +172,7 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
                 'severity': 'high',
                 'category': 'broad_rule_pattern',
                 'target': rule.get('rule_name', 'unnamed_rule'),
+                'platform_scope': rule.get('platform_scope', [_candidate_platform(rule)]),
                 'message': 'Rule file pattern is too broad; scope to specific directories or extensions.'
             })
 
@@ -173,6 +181,7 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
                 'severity': 'high',
                 'category': 'any_process_any_user',
                 'target': rule.get('rule_name', 'unnamed_rule'),
+                'platform_scope': rule.get('platform_scope', [_candidate_platform(rule)]),
                 'message': 'Any Process + Any User rule detected; convert to least-privilege scope.'
             })
 
@@ -180,7 +189,7 @@ def build_guardrail_checks(acceleration_candidates: List[Dict[str, Any]], rule_s
         'total_findings': len(findings),
         'high_severity': len([f for f in findings if f['severity'] == 'high']),
         'medium_severity': len([f for f in findings if f['severity'] == 'medium']),
-        'findings': findings[:25],
+        'findings': findings,
     }
 
 
@@ -372,13 +381,14 @@ def build_certificate_portfolio_analysis(cert_portfolio: Dict[str, Any]) -> Dict
         return {'certificates': [], 'recommendations': []}
     
     recommendations = []
-    for cert in cert_portfolio.get('top_by_coverage', [])[:10]:
+    for cert in cert_portfolio.get('top_by_coverage', []):
         recommendations.append({
             'certificate_id': cert.get('id'),
             'issuer': cert.get('issuer'),
             'files_covered': cert.get('file_count'),
             'affected_computers': cert.get('affected_computers'),
             'valid_signature': cert.get('has_valid_signature'),
+            'platform_scope': cert.get('platform_scope', ['Unknown']),
             'projected_score_gain': round(cert.get('score_gain_if_trusted', 0) * 100, 1),
             'risk_flags': [v for v in cert_portfolio.get('guardrail_violations', []) if str(cert.get('id')) in v],
         })
@@ -417,7 +427,7 @@ def build_recurring_event_rules(event_rules: Dict[str, Any]) -> Dict[str, Any]:
         return {'suggested_rules': [], 'unknown_reduction': 0}
     
     rules = []
-    for rule in event_rules.get('rules', [])[:10]:
+    for rule in event_rules.get('rules', []):
         rules.append({
             'process_name': rule.get('process'),
             'file_path': rule.get('path'),
@@ -459,6 +469,131 @@ def _normalize_os_family(value: Any) -> str:
     if any(token in text for token in ['linux', 'ubuntu', 'rhel', 'centos', 'debian', 'suse']):
         return 'linux'
     return 'unknown'
+
+
+def _candidate_platform(candidate: Dict[str, Any]) -> str:
+    """Infer a recommendation platform from explicit scope or its file path."""
+    scopes = candidate.get('platform_scope', [])
+    if isinstance(scopes, list) and len(scopes) == 1:
+        return str(scopes[0])
+    text = ' '.join(str(candidate.get(key, '')) for key in ('file_path', 'file_pattern', 'target')).lower()
+    if any(token in text for token in ['/applications/', '/library/', '/system/', '/users/']):
+        return 'macOS'
+    if any(text.startswith(prefix) or f' {prefix}' in text for prefix in ('/opt/', '/etc/', '/var/lib/', '/bin/', '/sbin/', '/lib/')):
+        return 'Linux'
+    if '\\' in text:
+        return 'Windows'
+    return 'Unknown'
+
+
+def _balance_recommendations(candidates: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """Keep global ranking while reserving slots for every represented platform."""
+    if len(candidates) <= limit:
+        return candidates
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for candidate in candidates:
+        groups.setdefault(_candidate_platform(candidate), []).append(candidate)
+    selected: List[Dict[str, Any]] = []
+    for platform in sorted(groups):
+        selected.append(groups[platform].pop(0))
+    remaining = [candidate for candidate in candidates if candidate not in selected]
+    selected.extend(remaining)
+    return selected[:limit]
+
+
+def _platform_evidence_reviews(
+    file_decisions: List[Dict[str, Any]],
+    binaries: List[Any],
+    catalog_rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Create itemized, non-approval review entries for macOS/Linux evidence."""
+    binary_by_id = {str(binary.file_id): binary for binary in binaries}
+    catalog_by_id = {str(row.get('id')): row for row in (catalog_rows or []) if row.get('id') is not None}
+    reviews = []
+    for decision in file_decisions:
+        platform = _candidate_platform({'file_path': decision.get('file_path')})
+        if platform not in {'macOS', 'Linux'}:
+            continue
+        binary = binary_by_id.get(str(decision.get('file_id')))
+        catalog = catalog_by_id.get(str(decision.get('file_id')))
+        publisher_value = (catalog or {}).get('company') or (catalog or {}).get('publisherOrCompany') or (catalog or {}).get('publisher')
+        certificate_value = (catalog or {}).get('certificateId')
+        publisher = str(publisher_value) if publisher_value else 'Unknown; publisher metadata was not returned by the event/catalog response'
+        if certificate_value:
+            certificate = f'Certificate ID {certificate_value}'
+            certificate_status = 'Certificate associated; validate signature and trust chain'
+        elif catalog is not None and 'certificateId' in catalog:
+            certificate = 'No certificate associated with catalog record'
+            certificate_status = 'No certificate associated; this does not prove the file is unsigned'
+        else:
+            certificate = 'Unknown; certificate metadata was not returned by the event/catalog response'
+            certificate_status = 'Unknown; signing status cannot be determined from this response'
+        trust_status = f"App Control file trust: {binary.trust_level}" if binary and binary.trust_level is not None else 'App Control file trust: Unknown'
+        endpoint = str(getattr(binary, 'computer_name', '') or 'Endpoint identified by event record')
+        file_path = decision.get('file_path') or '<path not returned by API>'
+        file_name = decision.get('file_name') or '<file name not returned by API>'
+        details = (
+            f"{platform} file '{file_name}' at '{file_path}' on {endpoint}. "
+            f"{trust_status}. Publisher status: {publisher}. Certificate status: {certificate}. "
+            f"Current workflow decision: {decision.get('decision', 'UNKNOWN')}."
+        )
+        reviews.extend([
+            {
+                'type': 'platform_file_review',
+                'target': file_name,
+                'platform_scope': [platform],
+                'endpoint': endpoint,
+                'file_path': file_path,
+                'publisher': publisher,
+                'certificate': certificate,
+                'files_to_approve': 0,
+                'readiness_gain_percent': 0.0,
+                'confidence_percent': 0.0,
+                'priority': 'review',
+                'review_only': True,
+                'rationale': details + f' {certificate_status} Resolve the evidence gap before selecting an approval action.'
+            },
+            {
+                'type': 'file_creation_rule_review',
+                'target': file_name,
+                'platform_scope': [platform],
+                'endpoint': endpoint,
+                'file_path': file_path,
+                'files_to_approve': 0,
+                'readiness_gain_percent': 0.0,
+                'confidence_percent': 0.0,
+                'priority': 'review',
+                'review_only': True,
+                'rationale': details + ' Review whether a narrowly scoped file-creation rule is appropriate; no rule is being recommended yet.'
+            },
+            {
+                'type': 'publisher_review',
+                'target': publisher,
+                'platform_scope': [platform],
+                'endpoint': endpoint,
+                'file_path': file_path,
+                'files_to_approve': 0,
+                'readiness_gain_percent': 0.0,
+                'confidence_percent': 0.0,
+                'priority': 'review',
+                'review_only': True,
+                'rationale': details + ' Review publisher identity and scope before considering publisher approval.'
+            },
+            {
+                'type': 'certificate_review',
+                'target': certificate,
+                'platform_scope': [platform],
+                'endpoint': endpoint,
+                'file_path': file_path,
+                'files_to_approve': 0,
+                'readiness_gain_percent': 0.0,
+                'confidence_percent': 0.0,
+                'priority': 'review',
+                'review_only': True,
+                'rationale': details + f' {certificate_status}. Review certificate identity, validity, and scope before considering certificate approval.'
+            },
+        ])
+    return reviews
 
 
 def _extract_environment_os_families(active_computers: Any) -> List[str]:
@@ -632,7 +767,7 @@ def resolve_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
         'html_output': _resolve_value(args.html_output, cfg.get('html_output'), None),
         'no_html': _as_bool(_resolve_value(args.no_html, cfg.get('no_html'), False), False),
         'acceleration_mode': _resolve_value(args.acceleration_mode, cfg.get('acceleration_mode'), 'conservative'),
-        'max_rows': _as_int(_resolve_value(args.max_rows, cfg.get('max_rows'), 5000), 5000),
+        'max_rows': _as_int(_resolve_value(args.max_rows, cfg.get('max_rows'), 0), 0),
         'verify_ssl': _as_bool(_resolve_value(args.verify_ssl, cfg.get('verify_ssl'), False), False),
         'config_path': args.config,
         'rapid_config': {
@@ -1010,10 +1145,20 @@ def apply_rapid_config_score_to_readiness(readiness: Dict[str, Any], rapid_confi
     return updated
 
 
-def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, settings: Dict[str, Any]) -> Dict[str, Any]:
+def build_endpoint_readiness_analysis(
+    active_computers: Any,
+    event_data: Any,
+    settings: Dict[str, Any],
+    unknown_binaries: Any = None,
+    file_prevalence: Any = None,
+    block_event_data: Any = None,
+) -> Dict[str, Any]:
     """Identify endpoint candidates that are likely ready for high-enforcement pilot."""
     computers = _extract_rows(active_computers)
     events = _extract_rows(event_data)
+    block_events = _extract_rows(block_event_data)
+    unapproved_files = _extract_rows(unknown_binaries)
+    file_instances = _extract_rows(file_prevalence)
 
     by_id: Dict[str, Dict[str, Any]] = {}
     for comp in computers:
@@ -1023,9 +1168,16 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
         by_id[comp_id] = {
             'computer_id': comp_id,
             'computer_name': comp.get('name', f'endpoint-{comp_id}'),
+            'os_family': next((
+                family for family in (
+                    _normalize_os_family(comp.get(key))
+                    for key in ['osName', 'osShortName', 'operatingSystem', 'platform', 'agentOs', 'os']
+                ) if family != 'unknown'
+            ), _normalize_os_family(comp.get('name'))),
             'policy_id': comp.get('policyId', 'unknown'),
             'policy_name': comp.get('policyName', comp.get('policy', 'Unassigned')),
             'unapproved_events': 0,
+            'unapproved_files': 0,
             'block_events': 0,
             'recent_unapproved_7d': 0,
         }
@@ -1043,7 +1195,7 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
     max_recent_penalty = max(0.0, float(settings.get('max_recent_penalty', 20.0)))
 
     now = datetime.now(timezone.utc)
-    seven_days_ago = now - timedelta(days=lookback_days)
+    recent_cutoff = now - timedelta(days=7)
 
     for event in events:
         comp_id = str(event.get('computerId', ''))
@@ -1053,9 +1205,11 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
             by_id[comp_id] = {
                 'computer_id': comp_id,
                 'computer_name': event.get('computerName', f'endpoint-{comp_id}'),
+                'os_family': _normalize_os_family(event.get('osName') or event.get('platform') or event.get('computerName')),
                 'policy_id': event.get('policyId', 'unknown'),
                 'policy_name': event.get('policyName', 'Unassigned'),
                 'unapproved_events': 0,
+                'unapproved_files': 0,
                 'block_events': 0,
                 'recent_unapproved_7d': 0,
             }
@@ -1071,29 +1225,65 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
         event_time = _parse_event_time(
             event.get('eventTime') or event.get('timestamp') or event.get('date') or event.get('createdTime')
         )
-        if event_time and event_time >= seven_days_ago:
+        if event_time and event_time >= recent_cutoff:
             by_id[comp_id]['recent_unapproved_7d'] += 1
+
+    unapproved_event_ids = {
+        str(event.get('id')) for event in events if event.get('id') is not None
+    }
+    for event in block_events:
+        comp_id = str(event.get('computerId', ''))
+        if comp_id in by_id and str(event.get('id')) not in unapproved_event_ids:
+            by_id[comp_id]['block_events'] += 1
+
+    # The event endpoint can lag behind the file catalog. Join unknown catalog
+    # IDs to file instances, then use the larger count per endpoint.
+    unknown_catalog_ids = {
+        str(binary.get('id', binary.get('fileCatalogId', '')))
+        for binary in unapproved_files
+        if binary.get('id', binary.get('fileCatalogId')) is not None
+    }
+    catalog_files_by_computer: Dict[str, set[str]] = {}
+    for binary in unapproved_files:
+        comp_id = str(binary.get('computerId', ''))
+        catalog_id = str(binary.get('id', binary.get('fileCatalogId', '')))
+        if comp_id in by_id and catalog_id in unknown_catalog_ids:
+            catalog_files_by_computer.setdefault(comp_id, set()).add(catalog_id)
+    for instance in file_instances:
+        catalog_id = str(instance.get('fileCatalogId', ''))
+        comp_id = str(instance.get('computerId', ''))
+        if catalog_id in unknown_catalog_ids and comp_id in by_id:
+            catalog_files_by_computer.setdefault(comp_id, set()).add(catalog_id)
+    for comp_id, catalog_ids in catalog_files_by_computer.items():
+        by_id[comp_id]['unapproved_files'] = len(catalog_ids)
 
     endpoint_rows: List[Dict[str, Any]] = []
     for endpoint in by_id.values():
         unapproved = int(endpoint.get('unapproved_events', 0) or 0)
+        catalog_unapproved = int(endpoint.get('unapproved_files', 0) or 0)
+        unapproved_activity = max(unapproved, catalog_unapproved)
         blocked = int(endpoint.get('block_events', 0) or 0)
         recent = int(endpoint.get('recent_unapproved_7d', 0) or 0)
+        has_activity_evidence = bool(unapproved_activity or blocked)
 
         # Conservative readiness scoring for pilot candidacy.
         readiness_score = 100.0
-        readiness_score -= min(max_unapproved_penalty, float(unapproved * unapproved_penalty))
+        readiness_score -= min(max_unapproved_penalty, float(unapproved_activity * unapproved_penalty))
         readiness_score -= min(max_block_penalty, float(blocked * block_penalty))
         readiness_score -= min(max_recent_penalty, float(recent * recent_penalty))
         readiness_score = max(0.0, round(readiness_score, 1))
 
         is_ready = (
+            has_activity_evidence
+            and
             readiness_score >= min_ready_score
             and blocked <= max_block_events
-            and unapproved <= max_unapproved_events
+            and unapproved_activity <= max_unapproved_events
         )
         if is_ready:
             recommendation = 'Pilot candidate for high enforcement.'
+        elif not has_activity_evidence:
+            recommendation = 'Insufficient activity evidence; verify event collection before pilot.'
         elif readiness_score >= near_ready_score:
             recommendation = 'Near-ready; clear recurring unapproved events before pilot.'
         else:
@@ -1101,6 +1291,7 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
 
         endpoint_rows.append({
             **endpoint,
+            'unapproved_activity': unapproved_activity,
             'readiness_score': readiness_score,
             'ready_for_high_enforcement': is_ready,
             'recommendation': recommendation,
@@ -1160,8 +1351,8 @@ def build_endpoint_readiness_analysis(active_computers: Any, event_data: Any, se
         },
         'policy_ready_buckets': policy_buckets,
         'recommendations': recommendations,
-        'top_ready_endpoints': ready[:25],
-        'endpoint_scores': endpoint_rows[:100],
+        'top_ready_endpoints': ready,
+        'endpoint_scores': endpoint_rows,
     }
 
 
@@ -1232,8 +1423,8 @@ def parse_args():
         '--max-rows',
         type=int,
         default=None,
-        help='Maximum rows to fetch per collection (default: 5000). '
-             'Increase for large environments to avoid partial-sample analysis.'
+        help='Maximum rows to fetch per collection (default: 0 = no cap, fetch the full dataset). '
+             'Set a positive value to cap collection and analyze a partial sample instead.'
     )
     return parser.parse_args()
 
@@ -1259,7 +1450,11 @@ def main():
     
     # Step 2: Collect trust signal data
     logger.info("\n[2/4] Collecting trust signal data...")
-    collector = EnforcementReadinessCollector(api_client, max_rows=settings['max_rows'])
+    collector = EnforcementReadinessCollector(
+        api_client,
+        max_rows=settings['max_rows'],
+        lookback_days=settings['endpoint_readiness']['lookback_days'],
+    )
     
     try:
         trust_signals = collector.collect_all_trust_signals()
@@ -1279,8 +1474,54 @@ def main():
     workflow_analyzer = ApprovalWorkflowAnalyzer()
     
     # Analyze unknown binaries
+    catalog_rows = _extract_rows(trust_signals.get('unknown_binaries', {}))
+    all_catalog_rows = _extract_rows(trust_signals.get('catalog_files', {}))
+    catalog_by_id = {str(row.get('id')): row for row in all_catalog_rows if row.get('id') is not None}
+    catalog_ids = {str(row.get('id')) for row in catalog_rows if row.get('id') is not None}
+    event_file_rows = []
+    event_files_by_identity = {}
+    for event in _extract_rows(trust_signals.get('all_events', {})):
+        event_label = str(event.get('subtypeName') or event.get('description') or '').lower()
+        if 'new unapproved file' not in event_label and 'new file on network' not in event_label:
+            continue
+        file_id = event.get('fileCatalogId') or event.get('sha256') or event.get('sha256Hash')
+        file_hash = str(event.get('sha256') or event.get('sha256Hash') or '')
+        file_key = '|'.join([str(file_id or ''), file_hash]) if file_id is not None else '|'.join([
+            str(event.get('computerId') or ''),
+            str(event.get('pathName') or ''),
+            str(event.get('fileName') or ''),
+        ])
+        if not file_key.strip('|') or str(file_id) in catalog_ids:
+            continue
+        current = event_files_by_identity.setdefault(file_key, {
+            **catalog_by_id.get(str(file_id), {}),
+            'id': file_id,
+            'fileName': event.get('fileName', ''),
+            'pathName': event.get('pathName', ''),
+            'effectiveState': 'Unapproved',
+            'certificateId': event.get('certificateId'),
+            'company': event.get('company') or event.get('publisher'),
+            'publisherOrCompany': event.get('publisher'),
+            'computerId': event.get('computerId'),
+            'computerName': event.get('computerName'),
+            'osName': event.get('osName'),
+            'sha256': event.get('sha256') or event.get('sha256Hash'),
+            'trust': event.get('fileTrust'),
+            'threat': event.get('fileThreat'),
+            'eventSubtype': event.get('subtypeName'),
+        })
+        trust_values = [current.get('trust'), event.get('fileTrust')]
+        numeric_trust = [value for value in trust_values if isinstance(value, (int, float))]
+        if numeric_trust:
+            current['trust'] = min(numeric_trust)
+        threat_values = [current.get('threat'), event.get('fileThreat')]
+        numeric_threat = [value for value in threat_values if isinstance(value, (int, float))]
+        if numeric_threat:
+            current['threat'] = max(numeric_threat)
+    event_file_rows.extend(event_files_by_identity.values())
+    analysis_file_rows = catalog_rows + event_file_rows
     unknown_analysis = analyzer.analyze_unknown_binaries(
-        trust_signals.get('unknown_binaries', {}),
+        analysis_file_rows,
         trust_signals.get('file_prevalence', {}),
         trust_signals.get('all_certificates', trust_signals.get('valid_certificates', {})),
         trust_signals.get('active_computers', {})
@@ -1338,22 +1579,22 @@ def main():
     workflow_file_decisions = workflow_analyzer.evaluate_each_file(
         unknown_analysis,
         publisher_analysis,
-        trust_signals.get('new_unapproved_events', {}),
+        trust_signals.get('all_events', trust_signals.get('new_unapproved_events', {})),
         trust_signals.get('software_rules', {})
     )
     workflow_custom_rule_decisions = workflow_analyzer.consider_custom_rule(
-        trust_signals.get('new_unapproved_events', {})
+        trust_signals.get('all_events', trust_signals.get('new_unapproved_events', {}))
     )
     workflow_rule_suggestions = workflow_analyzer.suggest_rules_for_high_enforcement(
         workflow_file_decisions,
-        trust_signals.get('new_unapproved_events', {}),
+        trust_signals.get('all_events', trust_signals.get('new_unapproved_events', {})),
         trust_signals.get('software_rules', {})
     )
 
     readiness = scorer.calculate_readiness_score(summary, detailed_analysis)
     rapid_config_analysis = build_rapid_config_analysis(
         trust_signals.get('software_rules', {}),
-        trust_signals.get('new_unapproved_events', {}),
+        trust_signals.get('all_events', trust_signals.get('new_unapproved_events', {})),
         trust_signals.get('active_computers', {}),
         settings.get('rapid_config', {}).get('excluded_configs', []),
     )
@@ -1380,9 +1621,29 @@ def main():
         enriched_rule_candidates.append(enriched)
 
     if 'recommended_rules' in workflow_rule_suggestions:
-        workflow_rule_suggestions['recommended_rules'] = enriched_rule_candidates
+        workflow_rule_suggestions['recommended_rules'] = _balance_recommendations(enriched_rule_candidates, 50)
     elif 'candidates' in workflow_rule_suggestions:
-        workflow_rule_suggestions['candidates'] = enriched_rule_candidates
+        workflow_rule_suggestions['candidates'] = _balance_recommendations(enriched_rule_candidates, 50)
+
+    rule_list = workflow_rule_suggestions.get('recommended_rules', workflow_rule_suggestions.get('candidates', []))
+    platform_reviews = _platform_evidence_reviews(workflow_file_decisions, unknown_analysis, all_catalog_rows)
+    rule_list.extend({
+        'rule_type': 'Platform Evidence Review',
+        'rule_name': review['target'],
+        'process_pattern': 'Review only',
+        'file_pattern': f"{review['platform_scope'][0]} event-backed files",
+        'operation': 'Investigate',
+        'action': 'Do not approve',
+        'user_scope': 'N/A',
+        'source_event_count': review['files_to_approve'],
+        'confidence': 0.0,
+        'expected_enforcement_impact': 'No approval impact until endpoint, signer, certificate, and publisher evidence is reviewed.',
+        'rationale': review['rationale'],
+        'safety_checks': ['Do not create a certificate or publisher approval from this entry', 'Review endpoint-specific evidence first'],
+        'platform_scope': review['platform_scope'],
+    } for review in platform_reviews)
+    for rule in rule_list:
+        rule['platform_scope'] = [_candidate_platform(rule)]
 
     all_acceleration_candidates = scorer.annotate_acceleration_candidates(
         analyzer.get_acceleration_candidates(
@@ -1395,6 +1656,9 @@ def main():
         safe_binaries,
         readiness['total_score'],
     )
+    all_acceleration_candidates = _balance_recommendations(
+        all_acceleration_candidates + platform_reviews, 100
+    )
 
     optimized_acceleration_plan = scorer.build_optimized_acceleration_plan(
         all_acceleration_candidates,
@@ -1404,10 +1668,26 @@ def main():
         target_readiness=80.0,
         max_steps=8,
     )
+    optimized_acceleration_plan['actions'] = _balance_recommendations(
+        optimized_acceleration_plan.get('actions', []) + platform_reviews, 8
+    )
+    optimized_acceleration_plan['actions'] = [
+        action for action in optimized_acceleration_plan.get('actions', [])
+        if action.get('type') != 'platform_evidence_review'
+    ]
     # Patch current_readiness to reflect the final score including Rapid Config dimension.
     optimized_acceleration_plan['current_readiness'] = readiness['total_score']
 
     guardrail_checks = build_guardrail_checks(all_acceleration_candidates, workflow_rule_suggestions)
+    for review in platform_reviews:
+        guardrail_checks['findings'].append({
+            'severity': 'info',
+            'category': 'platform_evidence_review',
+            'target': review['target'],
+            'platform_scope': review['platform_scope'],
+            'message': 'Review-only evidence; no certificate, publisher, or path approval is recommended from this entry.'
+        })
+    guardrail_checks['total_findings'] = len(guardrail_checks['findings'])
     backlog_delta_dashboard = build_backlog_delta_dashboard(readiness, all_acceleration_candidates, summary, rapid_config_analysis)
     score_audit = build_score_audit(summary, readiness, publisher_analysis)
     staged_remediation_workflow = build_staged_remediation_workflow(optimized_acceleration_plan, guardrail_checks, rapid_config_analysis)
@@ -1415,10 +1695,30 @@ def main():
     # Run the 3 new optimizers
     cert_portfolio = analyzer.analyze_certificate_portfolio(
         trust_signals.get('all_certificates', {}),
-        trust_signals.get('unknown_binaries', []),
+        analysis_file_rows,
         active_computers=summary.get('active_computer_count', 0)
     )
     certificate_portfolio_analysis = build_certificate_portfolio_analysis(cert_portfolio)
+    certificate_portfolio_analysis['top_certificates'] = _balance_recommendations(
+        certificate_portfolio_analysis.get('top_certificates', []), 10
+    )
+    certificate_portfolio_analysis['platform_reviews'] = [
+        {
+            'platform_scope': review['platform_scope'],
+            'review': review['rationale'],
+        }
+        for review in platform_reviews
+    ]
+    certificate_platforms = {
+        platform for certificate in certificate_portfolio_analysis.get('top_certificates', [])
+        for platform in certificate.get('platform_scope', [])
+    }
+    certificate_portfolio_analysis['coverage_gaps'] = [
+        f'{platform}: observed files exist, but no certificate recommendation was generated from available certificate evidence.'
+        for platform in ('macOS', 'Linux')
+        if any(_candidate_platform({'file_path': decision.get('file_path')}) == platform for decision in workflow_file_decisions)
+        and platform not in certificate_platforms
+    ]
     
     policy_scope = analyzer.simulate_policy_scope_impact(
         workflow_rule_suggestions,
@@ -1426,13 +1726,16 @@ def main():
     )
     policy_scope_analysis = build_policy_scope_analysis(policy_scope)
     
-    file_events = trust_signals.get('new_unapproved_events', {}).get('results', []) if isinstance(trust_signals.get('new_unapproved_events'), dict) else []
+    file_events = trust_signals.get('all_events', {}).get('results', []) if isinstance(trust_signals.get('all_events'), dict) else []
     event_rules = analyzer.generate_recurring_event_rules(file_events)
     recurring_event_analysis = build_recurring_event_rules(event_rules)
     endpoint_readiness_analysis = build_endpoint_readiness_analysis(
         trust_signals.get('active_computers', {}),
         trust_signals.get('new_unapproved_events', {}),
         settings['endpoint_readiness'],
+        trust_signals.get('unknown_binaries', []),
+        trust_signals.get('file_prevalence', []),
+        trust_signals.get('block_events', []),
     )
     
     logger.info(f"Readiness Score: {readiness['total_score']}%")
@@ -1463,6 +1766,25 @@ def main():
         publisher_recommendations,
         summary
     )
+    endpoint_rows = endpoint_readiness_analysis.get('endpoint_scores', [])
+    platform_coverage = []
+    for platform in ('Windows', 'macOS', 'Linux'):
+        platform_endpoints = [
+            endpoint for endpoint in endpoint_rows
+            if endpoint.get('os_family', _normalize_os_family(endpoint.get('computer_name'))) == platform.lower()
+        ]
+        platform_coverage.append({
+            'platform': platform,
+            'endpoint_count': len(platform_endpoints),
+            'endpoints_with_activity': len([
+                endpoint for endpoint in platform_endpoints
+                if endpoint.get('unapproved_activity') or endpoint.get('block_events')
+            ]),
+            'recommendation': (
+                f"Review {platform} file, certificate, and publisher evidence." if platform_endpoints else
+                f"No active {platform} endpoints detected; no {platform} approval recommendations can be generated."
+            )
+        })
     
     # Step 4: Generate output
     logger.info("\n[4/4] Generating output...")
@@ -1474,9 +1796,17 @@ def main():
             'max_rows': settings['max_rows'],
             'catalog_total': trust_signals.get('catalog_total', 'unknown'),
             'catalog_sampled': trust_signals.get('catalog_sampled', False),
+            'event_backed_files_added': len(event_file_rows),
             'read_only_analysis': True,
             'api_write_operations': 0,
             'config_path': settings.get('config_path'),
+            'event_history_days': settings['endpoint_readiness']['lookback_days'],
+            'event_history_rows_collected': len(_extract_rows(trust_signals.get('all_events', {}))),
+            'computer_unapproved_events_analyzed': len(_extract_rows(trust_signals.get('new_unapproved_events', {}))),
+            'network_file_events_retained_for_analysis': len([
+                event for event in _extract_rows(trust_signals.get('all_events', {}))
+                if 'new file on network' in str(event.get('subtypeName', '')).lower()
+            ]),
         },
         'readiness_score': readiness,
         'summary': summary,
@@ -1535,7 +1865,7 @@ def main():
             for b in safe_binaries[:20]  # Top 20 candidates from safe binaries only
             if b.recommendation == 'AUTO_APPROVE_CANDIDATE'
         ],
-        'acceleration_candidates': all_acceleration_candidates[:10],
+        'acceleration_candidates': _balance_recommendations(all_acceleration_candidates, 10),
         'optimized_acceleration_plan': optimized_acceleration_plan,
         'guardrail_checks': guardrail_checks,
         'backlog_delta_dashboard': backlog_delta_dashboard,
@@ -1546,6 +1876,7 @@ def main():
             'strategic_roadmap': strategic_roadmap,
             'rapid_config_recommendations': rapid_config_analysis.get('recommendations', []),
             'prioritized_rapid_config_names': rapid_config_analysis.get('action_needed_config_names', []),
+            'platform_coverage': platform_coverage,
         },
         'acceleration_plan': {
             'current_readiness': readiness['total_score'],
@@ -1577,6 +1908,17 @@ def main():
                 'impact': 'Excluded from auto-approval per security policy',
                 'recommended_action': 'Review manually if approval needed'
             }
+        ] + [
+            {
+                'category': f"{endpoint.get('os_family', _normalize_os_family(endpoint.get('computer_name'))).title()} Event Coverage",
+                'description': f"{endpoint.get('computer_name')} has no attributed unapproved or block events in the {settings['endpoint_readiness']['lookback_days']}-day analysis window.",
+                'impact': f"The {endpoint.get('os_family', _normalize_os_family(endpoint.get('computer_name')))} endpoint cannot be meaningfully assessed for High Enforcement readiness from an empty event set.",
+                'recommended_action': f"Verify App Control event retention and endpoint attribution for this {endpoint.get('os_family', _normalize_os_family(endpoint.get('computer_name')))} endpoint before approving platform-specific controls."
+            }
+            for endpoint in endpoint_readiness_analysis.get('endpoint_scores', [])
+            if endpoint.get('os_family', _normalize_os_family(endpoint.get('computer_name'))) in {'macos', 'linux'}
+            and not endpoint.get('unapproved_activity')
+            and not endpoint.get('block_events')
         ],
         'certificate_portfolio_analysis': certificate_portfolio_analysis,
         'policy_scope_analysis': policy_scope_analysis,

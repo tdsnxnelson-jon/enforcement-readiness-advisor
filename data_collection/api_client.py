@@ -63,12 +63,18 @@ class CBApiClient:
         Returns:
             JSON response as dictionary
         """
-        # Add pagination parameters
+        # Add pagination parameters.
+        # NOTE: The App Control REST API uses 'limit'/'offset', NOT 'rows'/'start'.
+        # Sending 'rows'/'start' is silently ignored by the server, which then
+        # always falls back to its default of the first 1000 results - causing
+        # large catalogs (fileCatalog/certificate/publisher) to be truncated and
+        # any records outside that first page (e.g. some Mac binaries and their
+        # publisher/certificate joins) to appear to be missing data.
         query_params = params.copy() if params else {}
         if rows is not None:
-            query_params['rows'] = rows
-        if start > 0:
-            query_params['start'] = start
+            query_params['limit'] = rows
+        if start:
+            query_params['offset'] = start
         
         url = self._build_url(endpoint, query_params)
         
@@ -98,8 +104,8 @@ class CBApiClient:
             Query results
         """
         params = {
-            'rows': rows,
-            'start': start
+            'limit': rows,
+            'offset': start
         }
         
         # Add filters
@@ -111,6 +117,49 @@ class CBApiClient:
             params['facet'] = ','.join(facets)
         
         return self.get(endpoint, params)
+    
+    def query_all(self, endpoint: str, filters: Optional[List[str]] = None,
+                  facets: Optional[List[str]] = None, max_rows: Optional[int] = None,
+                  page_size: int = 1000) -> List[Dict]:
+        """
+        Page through an endpoint's results using limit/offset until either the
+        server has no more rows to return or max_rows has been collected.
+
+        A single request is capped by the server at ~1000 rows if no explicit
+        limit is given, so any endpoint that can contain more rows than that
+        (e.g. fileCatalog, certificate, publisher) must be paginated to avoid
+        silently dropping records - including specific files whose fileCatalog
+        row simply falls outside whatever single page was requested.
+
+        Args:
+            endpoint: API endpoint
+            filters: List of filter strings (best-effort; not all endpoints honor this)
+            facets: List of fields to facet on
+            max_rows: Overall cap across all pages. None or <= 0 fetches everything
+                (some callers pass rows=0 intending "give me the full/true set",
+                matching the App Control convention that limit=0 means "all rows")
+            page_size: Rows requested per page
+
+        Returns:
+            Combined list of rows across all pages
+        """
+        collected: List[Dict] = []
+        offset = 0
+        unlimited = max_rows is None or max_rows <= 0
+        while True:
+            remaining = None if unlimited else max_rows - len(collected)
+            if remaining is not None and remaining <= 0:
+                break
+            limit = page_size if remaining is None else min(page_size, remaining)
+            page = self.query(endpoint, filters=filters, facets=facets, rows=limit, start=offset)
+            page_rows = page if isinstance(page, list) else page.get('results', page.get('rows', []))
+            if not isinstance(page_rows, list) or not page_rows:
+                break
+            collected.extend(page_rows)
+            if len(page_rows) < limit:
+                break
+            offset += len(page_rows)
+        return collected
     
     def facet_query(self, endpoint: str, facet_field: str,
                    filters: Optional[List[str]] = None, 

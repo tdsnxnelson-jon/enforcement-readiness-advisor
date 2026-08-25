@@ -356,7 +356,7 @@ class ApprovalWorkflowAnalyzer:
                 "Do not build custom rules from execute block events.",
                 "Manage expansion by minimizing Path x Process x User combinations.",
             ],
-            "recommended_rules": ranked[:50],
+            "recommended_rules": ranked,
             "rule_anti_patterns_detected": anti_patterns,
             "summary": {
                 "total_candidates": len(ranked),

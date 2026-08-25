@@ -28,10 +28,13 @@ class BinaryAnalysis:
     publisher: Optional[str] = None
     signer: Optional[str] = None
     certificate_id: Optional[str] = None
+    sha256: Optional[str] = None
     approval_state: str = "UNKNOWN"
     prevalence: int = 0
-    trust_level: Optional[str] = None  # From CB API: "TRUSTED", "UNTRUSTED", etc.
+    trust_level: Optional[Any] = None  # Raw App Control trust label or numeric score
+    trust_score: Optional[float] = None  # App Control numeric trust score, 0-10
     threat_level: Optional[str] = None  # From CB API: "CRITICAL", "WARNING", etc.
+    computer_name: Optional[str] = None
     trust_signals: List[TrustSignal] = field(default_factory=list)
     risk_score: float = 0.0
     recommendation: str = "REVIEW"
@@ -112,10 +115,13 @@ class TrustSignalAnalyzer:
                 publisher=row.get('company') or row.get('publisherOrCompany') or row.get('publisher'),
                 signer=row.get('signer'),
                 certificate_id=row.get('certificateId'),
+                sha256=row.get('sha256'),
                 approval_state=row.get('effectiveState', row.get('approvalState', 'NOT_APPROVED')),
                 prevalence=prevalence,
                 trust_level=row.get('trust'),  # CB API trust indicator
+                trust_score=float(row.get('trust')) if isinstance(row.get('trust'), (int, float)) else None,
                 threat_level=row.get('threat')  # CB API threat indicator
+                , computer_name=row.get('computerName')
             )
             
             # Extract enhanced trust signals
@@ -186,9 +192,11 @@ class TrustSignalAnalyzer:
         # CB API Trust Indicator - Most important signal!
         trust_field = row.get('trust')
         trust_value = None
+        numeric_trust_score = None
         trust_confidence = 0.2
         if trust_field is not None:
             if isinstance(trust_field, (int, float)):
+                numeric_trust_score = max(0.0, min(10.0, float(trust_field)))
                 if trust_field >= 8:
                     trust_value = 'TRUSTED'
                     trust_confidence = 0.95
@@ -217,7 +225,10 @@ class TrustSignalAnalyzer:
                 value=trust_value,
                 confidence=trust_confidence,
                 source='fileCatalog',
-                metadata={'trust_level': trust_value}
+                metadata={
+                    'trust_level': trust_value,
+                    'trust_score': numeric_trust_score,
+                }
             ))
         
         # CB API Threat Indicator
@@ -391,14 +402,17 @@ class TrustSignalAnalyzer:
         # If CB indicates TRUSTED, high confidence
         if cb_trust_signal:
             trust_value = cb_trust_signal.value
-            if trust_value == 'TRUSTED':
-                score += 0.85  # Very high score for trusted
+            trust_score = cb_trust_signal.metadata.get('trust_score')
+            if trust_score is not None:
+                score += 0.05 + (0.8 * float(trust_score) / 10.0)
+            elif trust_value == 'TRUSTED':
+                score += 0.85
             elif trust_value == 'KNOWN':
-                score += 0.70  # Good score for known
+                score += 0.70
             elif trust_value == 'UNKNOWN':
-                score += 0.30  # Lower score for unknown
+                score += 0.30
             elif trust_value in ['SUSPECT', 'UNTRUSTED']:
-                score += 0.05  # Very low score for untrusted
+                score += 0.05
         else:
             # No CB trust indicator, use base score
             score += 0.15
@@ -615,7 +629,7 @@ class TrustSignalAnalyzer:
         # Sort by potential impact and confidence
         recommendations.sort(key=lambda x: (x['confidence_percent'], x['readiness_improvement_percent']), reverse=True)
         
-        return recommendations[:max_candidates]
+        return recommendations
     
     def _create_certificate_recommendation(self, cert_id: str, cert_info: Dict,
                                            files: List[BinaryAnalysis],
@@ -647,6 +661,7 @@ class TrustSignalAnalyzer:
             issuer_bonus = 15
         
         confidence_percent = min(base_confidence + sig_bonus + issuer_bonus, 95.0)
+        platforms = self._platforms_for_files(files)
         
         return {
             'type': 'certificate_approval',
@@ -661,6 +676,7 @@ class TrustSignalAnalyzer:
             'confidence_percent': round(confidence_percent, 1),
             'rationale': f"Approve certificate '{subject}' (thumbprint: {thumbprint[:16]}...). {total_files} unknown files will be approved with {round(confidence_percent, 1)}% confidence.",
             'priority': 'high' if confidence_percent >= 80 else 'medium' if confidence_percent >= 70 else 'low'
+            , 'platform_scope': platforms
         }
 
     def _resolve_certificate_issuer(self, cert_info: Dict,
@@ -806,6 +822,7 @@ class TrustSignalAnalyzer:
         diversity_bonus = min(avg_signals * 5, 15)  # Up to 15% for diverse signals
         
         confidence_percent = min(base_confidence + publisher_bonus + prevalence_bonus + diversity_bonus, 95.0)
+        platforms = self._platforms_for_files(files)
         
         return {
             'type': 'publisher_approval',
@@ -821,7 +838,26 @@ class TrustSignalAnalyzer:
                 f"Confidence based on risk score, prevalence, and trust signal diversity."
             ),
             'priority': 'high' if confidence_percent >= 70 else 'medium'
+            , 'platform_scope': platforms
         }
+
+    def _platforms_for_files(self, files: List[BinaryAnalysis]) -> List[str]:
+        """Infer platform scope from file paths so approvals are not presented as universal."""
+        platforms = set()
+        for binary in files:
+            path = str(binary.file_path or '').lower()
+            if path.startswith('/'):
+                if any(token in path for token in ['/applications/', '/library/', '/system/', '/users/']):
+                    platforms.add('macOS')
+                elif '/usr/local/' in path:
+                    platforms.add('Unix-like')
+                else:
+                    platforms.add('Linux')
+            elif '\\' in path:
+                platforms.add('Windows')
+            else:
+                platforms.add('Unknown')
+        return sorted(platforms)
     
     def _create_installer_recommendation(self, installer_name: str, files: List[BinaryAnalysis]) -> Dict:
         """Create an installer-based recommendation."""
@@ -1068,12 +1104,18 @@ class TrustSignalAnalyzer:
             cert = cert_map.get(cert_id) or cert_map.get(str(cert_id)) or {'id': cert_id}
             issuer = self._resolve_certificate_issuer(cert, cert_map)
             has_valid_signature = _as_bool(cert.get('hasValidSignature', cert.get('valid', False)), False)
+            certificate_files = [f for f in file_catalog if f.get('certificateId') == cert_id]
+            platform_scope = sorted({
+                'macOS' if any(token in str(f.get('pathName') or '').lower() for token in ['/applications/', '/library/', '/system/', '/users/']) else 'Unix-like' if '/usr/local/' in str(f.get('pathName') or '').lower() else 'Linux' if str(f.get('pathName') or '').startswith('/') else 'Windows'
+                for f in certificate_files
+            }) or ['Unknown']
             top_certs.append({
                 'id': cert_id,
                 'issuer': issuer,
                 'file_count': file_count,
                 'affected_computers': len(set(f.get('computerId') for f in file_catalog if f.get('certificateId') == cert_id)),
                 'has_valid_signature': has_valid_signature,
+                'platform_scope': platform_scope,
                 'score_gain_if_trusted': min(0.05 * (file_count / len(file_catalog)), 0.15)
             })
         
@@ -1144,7 +1186,7 @@ class TrustSignalAnalyzer:
         # Generate suggested rules
         rules = []
         total_events = len(file_events)
-        for (process, path), count in sorted(high_freq.items(), key=lambda x: x[1], reverse=True)[:10]:
+        for (process, path), count in sorted(high_freq.items(), key=lambda x: x[1], reverse=True):
             rules.append({
                 'type': 'file_creation_control_rule',
                 'process': process,
