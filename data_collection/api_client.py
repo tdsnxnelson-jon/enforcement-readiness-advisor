@@ -2,6 +2,7 @@
 import requests
 import json
 import logging
+import time
 import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional
@@ -9,6 +10,12 @@ from urllib.parse import urlencode
 from urllib3.exceptions import InsecureRequestWarning
 
 logger = logging.getLogger(__name__)
+
+# Transient-failure retry policy for individual HTTP requests. A page fetch
+# failing outright (vs. being retried) silently drops that slice of data from
+# the result set, so it's worth a few retries before giving up.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 0.5
 
 
 class CBApiClient:
@@ -81,14 +88,22 @@ class CBApiClient:
         
         url = self._build_url(endpoint, query_params)
         
-        try:
-            logger.info(f"GET {url}")
-            response = self.session.get(url, verify=self.verify_ssl)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            raise
+        last_error: Optional[Exception] = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                logger.info(f"GET {url}")
+                response = self.session.get(url, verify=self.verify_ssl)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if attempt < RETRY_ATTEMPTS:
+                    delay = RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                    logger.warning(f"GET {url} failed (attempt {attempt}/{RETRY_ATTEMPTS}): {e}. Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"GET {url} failed after {RETRY_ATTEMPTS} attempts: {e}")
+        raise last_error
     
     def query(self, endpoint: str, filters: Optional[List[str]] = None,
              facets: Optional[List[str]] = None, rows: int = 1000,
@@ -179,6 +194,7 @@ class CBApiClient:
             return self._query_all_sequential(endpoint, filters, facets, rows_to_fetch, page_size, sort)
 
         collected_by_offset: Dict[int, List[Dict]] = {}
+        failed_offsets: List[int] = []
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_to_offset = {
                 pool.submit(
@@ -192,11 +208,18 @@ class CBApiClient:
                 try:
                     page = future.result()
                 except Exception as exc:
-                    logger.warning(f"Page fetch failed for {endpoint} offset={offset}: {exc}")
+                    logger.error(f"Page fetch failed for {endpoint} offset={offset} after retries: {exc}")
                     collected_by_offset[offset] = []
+                    failed_offsets.append(offset)
                     continue
                 page_rows = page if isinstance(page, list) else page.get('results', page.get('rows', []))
                 collected_by_offset[offset] = page_rows if isinstance(page_rows, list) else []
+
+        if failed_offsets:
+            logger.error(
+                f"{endpoint}: {len(failed_offsets)}/{len(page_starts)} page(s) could not be fetched "
+                f"after retries; results are incomplete for this endpoint. Failed offsets: {failed_offsets}"
+            )
 
         collected: List[Dict] = []
         for offset in page_starts:
@@ -226,7 +249,16 @@ class CBApiClient:
             if remaining is not None and remaining <= 0:
                 break
             limit = page_size if remaining is None else min(page_size, remaining)
-            page = self.query(endpoint, filters=filters, facets=facets, rows=limit, start=offset, sort=sort)
+            try:
+                page = self.query(endpoint, filters=filters, facets=facets, rows=limit, start=offset, sort=sort)
+            except Exception as exc:
+                # Retries are already exhausted inside get(); stop here rather than losing
+                # everything collected so far, but make the truncation loud and obvious.
+                logger.error(
+                    f"{endpoint}: page fetch failed at offset={offset} after retries: {exc}. "
+                    f"Returning {len(collected)} row(s) collected before the failure; results are incomplete."
+                )
+                break
             page_rows = page if isinstance(page, list) else page.get('results', page.get('rows', []))
             if not isinstance(page_rows, list) or not page_rows:
                 break

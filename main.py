@@ -13,6 +13,7 @@ import sys
 import fnmatch
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 # Add project root to path
 import os
@@ -715,6 +716,20 @@ def _as_string_list(value: Any) -> List[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _is_probably_internal_host(hostname: str) -> bool:
+    """Best-effort check for lab/private hosts, to scope the insecure-SSL warning below."""
+    import ipaddress
+    if not hostname:
+        return False
+    lowered = hostname.lower()
+    if lowered in {'localhost'} or lowered.endswith('.local'):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_private
+    except ValueError:
+        return False
 
 
 def _load_config_file(path: str) -> Dict[str, Any]:
@@ -1448,6 +1463,14 @@ def main():
     
     # Step 1: Initialize API client
     logger.info("\n[1/4] Connecting to CB App Control server...")
+    if not settings['verify_ssl']:
+        hostname = urlparse(settings['server']).hostname or ''
+        if not _is_probably_internal_host(hostname):
+            logger.warning(
+                f"SSL verification is disabled (--verify-ssl not set / verify_ssl=false) and '{hostname}' "
+                f"does not look like a local/lab host. Double-check this is intentional before running "
+                f"against a production server."
+            )
     api_client = CBApiClient(
         settings['server'], settings['token'], settings['verify_ssl'],
         max_workers=settings['max_workers'],

@@ -355,10 +355,13 @@ class SoftwareRuleCollector(BaseCollector):
         other_errors: List[str] = []
 
         for endpoint in self.candidate_endpoints:
-            status_code, payload, error_text = self._query_endpoint_soft(endpoint, rows)
+            # Cheap single-row probe first: distinguishes "not permitted"/"not on
+            # this server build" from a real fetch failure, without retrying
+            # against endpoints that are expected to 403/404 on some servers.
+            status_code, _, error_text = self._query_endpoint_soft(endpoint, rows=1)
 
-            if status_code == 200 and payload is not None:
-                rows_payload = self._extract_payload_rows(payload)
+            if status_code == 200:
+                rows_payload = self.api_client.query_all(endpoint, max_rows=rows, sort='id ASC')
                 for row in rows_payload:
                     if isinstance(row, dict):
                         row['_ruleSourceEndpoint'] = endpoint
@@ -460,18 +463,6 @@ class SoftwareRuleCollector(BaseCollector):
             error_text = f"HTTP {response.status_code}"
 
         return response.status_code, None, error_text
-
-    def _extract_payload_rows(self, payload: Any) -> List[Dict[str, Any]]:
-        """Normalize endpoint payload into a list of row dictionaries."""
-        if payload is None:
-            return []
-        if isinstance(payload, list):
-            return [row for row in payload if isinstance(row, dict)]
-        if isinstance(payload, dict):
-            rows = payload.get('results', payload.get('rows', []))
-            if isinstance(rows, list):
-                return [row for row in rows if isinstance(row, dict)]
-        return []
 
 
 class EnforcementReadinessCollector:
