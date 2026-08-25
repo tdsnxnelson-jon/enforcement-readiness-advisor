@@ -1713,12 +1713,23 @@ def main():
     certificate_portfolio_analysis['top_certificates'] = _balance_recommendations(
         certificate_portfolio_analysis.get('top_certificates', []), 10
     )
+    # platform_reviews has up to 4 itemized entries per file (file/rule/publisher/
+    # certificate); summarize to one line per platform instead of dumping every
+    # per-file entry into a single wall-of-text paragraph.
+    platform_review_file_counts: Dict[str, int] = {}
+    for review in platform_reviews:
+        if review.get('type') != 'platform_file_review':
+            continue
+        platform = review['platform_scope'][0]
+        platform_review_file_counts[platform] = platform_review_file_counts.get(platform, 0) + 1
     certificate_portfolio_analysis['platform_reviews'] = [
         {
-            'platform_scope': review['platform_scope'],
-            'review': review['rationale'],
+            'platform_scope': [platform],
+            'file_count': count,
+            'review': f"{count} {platform} file{'s' if count != 1 else ''} require endpoint, signer, "
+                      f"certificate, and publisher review before approval.",
         }
-        for review in platform_reviews
+        for platform, count in sorted(platform_review_file_counts.items())
     ]
     certificate_platforms = {
         platform for certificate in certificate_portfolio_analysis.get('top_certificates', [])

@@ -36,22 +36,29 @@ class FileCatalogCollector(BaseCollector):
     
     def __init__(self, api_client: CBApiClient):
         super().__init__(api_client, 'fileCatalog')
-    
+        self._cache: Dict[int, list] = {}
+
+    def _get_all(self, rows: int) -> list:
+        """Fetch the full file catalog once per row cap and reuse it across
+        get_all/get_unknown_binaries/get_approved_binaries instead of re-fetching."""
+        if rows not in self._cache:
+            all_files = self.collect(rows=rows)
+            self._cache[rows] = all_files if isinstance(all_files, list) else []
+        return self._cache[rows]
+
+    def get_all(self, rows: int = 1000) -> list:
+        """Get the full, unfiltered file catalog."""
+        return self._get_all(rows)
+
     def get_unknown_binaries(self, rows: int = 1000) -> list:
-        """Get all unapproved binaries (effectiveState == 'Unapproved')."""
-        # Note: API ignores filters, so we fetch all and filter locally by effectiveState
-        all_files = self.collect(rows=rows)
-        if isinstance(all_files, list):
-            return [f for f in all_files if f.get('effectiveState') == 'Unapproved']
-        return []
+        """Get all unapproved binaries (effectiveState == 'Unapproved').
+        Note: the API ignores 'filter' query params, so state is filtered locally."""
+        return [f for f in self._get_all(rows) if f.get('effectiveState') == 'Unapproved']
     
     def get_approved_binaries(self, rows: int = 1000) -> list:
-        """Get all approved binaries (effectiveState == 'Approved')."""
-        # Note: API ignores filters, so we fetch all and filter locally by effectiveState
-        all_files = self.collect(rows=rows)
-        if isinstance(all_files, list):
-            return [f for f in all_files if f.get('effectiveState') == 'Approved']
-        return []
+        """Get all approved binaries (effectiveState == 'Approved').
+        Note: the API ignores 'filter' query params, so state is filtered locally."""
+        return [f for f in self._get_all(rows) if f.get('effectiveState') == 'Approved']
     
     def get_by_publisher(self, publisher: str, rows: int = 1000) -> Dict:
         """Get binaries by publisher."""
@@ -75,26 +82,29 @@ class CertificateCollector(BaseCollector):
     
     def __init__(self, api_client: CBApiClient):
         super().__init__(api_client, 'certificate')
-    
-    def get_valid_certificates(self, rows: int = 100) -> Dict:
-        """Get certificates with valid signatures."""
-        return self.collect(
-            filters=['hasValidSignature:true'],
-            facets=['issuer'],
-            rows=rows
-        )
-    
-    def get_invalid_certificates(self, rows: int = 100) -> Dict:
-        """Get certificates with invalid signatures."""
-        return self.collect(
-            filters=['hasValidSignature:false'],
-            facets=['issuer'],
-            rows=rows
-        )
+        self._cache: Dict[int, list] = {}
 
-    def get_all_certificates(self, rows: int = 2000) -> Dict:
+    def _get_all(self, rows: int) -> list:
+        """Fetch the full certificate list once per row cap and reuse it across
+        the get_* variants below instead of re-fetching for each one."""
+        if rows not in self._cache:
+            all_certs = self.collect(rows=rows)
+            self._cache[rows] = all_certs if isinstance(all_certs, list) else []
+        return self._cache[rows]
+
+    def get_valid_certificates(self, rows: int = 100) -> list:
+        """Get certificates with valid signatures.
+        Note: the API ignores 'filter' query params, so validity is filtered locally."""
+        return [c for c in self._get_all(rows) if c.get('valid')]
+
+    def get_invalid_certificates(self, rows: int = 100) -> list:
+        """Get certificates with invalid signatures.
+        Note: the API ignores 'filter' query params, so validity is filtered locally."""
+        return [c for c in self._get_all(rows) if not c.get('valid')]
+
+    def get_all_certificates(self, rows: int = 2000) -> list:
         """Get all certificates for full certificate-chain resolution."""
-        return self.collect(rows=rows)
+        return self._get_all(rows)
     
     def get_by_issuer(self, issuer: str, rows: int = 100) -> Dict:
         """Get certificates by issuer."""
@@ -109,33 +119,32 @@ class PublisherCollector(BaseCollector):
     
     def __init__(self, api_client: CBApiClient):
         super().__init__(api_client, 'publisher')
-    
+        self._cache: Dict[int, list] = {}
+
+    def _get_all(self, rows: int) -> list:
+        """Fetch the full publisher list once per row cap and reuse it across
+        the get_* variants below instead of re-fetching for each one."""
+        if rows not in self._cache:
+            all_pubs = self.collect(rows=rows)
+            self._cache[rows] = all_pubs if isinstance(all_pubs, list) else []
+        return self._cache[rows]
+
     def get_trusted_publishers(self, rows: int = 100) -> list:
         """Get trusted publishers (publisherReputation numeric value 3)."""
-        all_pubs = self.collect(rows=rows)
-        if isinstance(all_pubs, list):
-            return [p for p in all_pubs if p.get('publisherReputation') == 3]
-        return []
+        return [p for p in self._get_all(rows) if p.get('publisherReputation') == 3]
     
     def get_blocked_publishers(self, rows: int = 100) -> list:
         """Get blocked publishers (publisherReputation numeric value 2)."""
-        all_pubs = self.collect(rows=rows)
-        if isinstance(all_pubs, list):
-            return [p for p in all_pubs if p.get('publisherReputation') == 2]
-        return []
+        return [p for p in self._get_all(rows) if p.get('publisherReputation') == 2]
     
     def get_all_by_reputation(self, rows: int = 100) -> dict:
         """Get all publishers with reputation breakdown."""
-        all_pubs = self.collect(rows=rows)
-        if not isinstance(all_pubs, list):
-            return {'TRUSTED': [], 'BLOCKED': [], 'UNKNOWN': []}
-        
-        result = {
+        all_pubs = self._get_all(rows)
+        return {
             'TRUSTED': [p for p in all_pubs if p.get('publisherReputation') == 3],
             'BLOCKED': [p for p in all_pubs if p.get('publisherReputation') == 2],
             'UNKNOWN': [p for p in all_pubs if p.get('publisherReputation') == 0],
         }
-        return result
 
 
 class CompanyNameCollector(BaseCollector):
@@ -243,48 +252,26 @@ class EventCollector(BaseCollector):
         super().__init__(api_client, 'event')
 
     def _get_event_history(self, candidate_filters: List[List[str]], rows: int, lookback_days: int) -> Dict:
-        """Page through a bounded event history, preserving only the requested event scope."""
+        """Fetch a bounded event history, preserving only the requested event scope."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, lookback_days))
-        # rows only sets the per-page size here; pagination always runs to exhaustion
-        # within the lookback window. rows <= 0 ("no cap") falls back to a full page.
-        page_size = min(rows, 1000) if rows and rows > 0 else 1000
-        collected: List[Dict] = []
-        query_succeeded = False
         for filters in candidate_filters:
             try:
-                seen_pages = set()
-                start = 0
-                while True:
-                    # sort=id ASC pins pagination to a stable field so events
-                    # created/received mid-fetch can't shift rows between pages.
-                    params = {'offset': start, 'sort': 'id ASC'}
-                    if filters:
-                        params['filter'] = ';'.join(filters)
-                    page = self.api_client.get(self.endpoint, params=params, rows=page_size)
-                    page_rows = page if isinstance(page, list) else page.get('results', [])
-                    if not isinstance(page_rows, list):
-                        page_rows = []
-                    page_signature = tuple(str(row.get('id')) for row in page_rows)
-                    if page_signature in seen_pages:
-                        logger.warning('Event API repeated a page; stopping pagination to prevent duplicate requests.')
-                        break
-                    seen_pages.add(page_signature)
-                    for event in page_rows:
-                        timestamp = event.get('eventTime') or event.get('timestamp') or event.get('date') or event.get('createdTime')
-                        try:
-                            parsed = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
-                        except (TypeError, ValueError):
-                            parsed = None
-                        if parsed is None or parsed >= cutoff:
-                            collected.append(event)
-                    if len(page_rows) < page_size:
-                        break
-                    start += len(page_rows)
-                query_succeeded = True
-                return {'results': collected, 'lookback_days': lookback_days, 'query_succeeded': query_succeeded}
+                # query_all already paginates concurrently with stable sort=id ASC.
+                all_rows = self.api_client.query_all(self.endpoint, filters=filters or None, max_rows=rows)
             except Exception as exc:
                 logger.debug(f"Event filter failed {filters}: {exc}")
-        return {'results': collected, 'lookback_days': lookback_days, 'query_succeeded': query_succeeded}
+                continue
+            collected = []
+            for event in all_rows:
+                timestamp = event.get('eventTime') or event.get('timestamp') or event.get('date') or event.get('createdTime')
+                try:
+                    parsed = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+                except (TypeError, ValueError):
+                    parsed = None
+                if parsed is None or parsed >= cutoff:
+                    collected.append(event)
+            return {'results': collected, 'lookback_days': lookback_days, 'query_succeeded': True}
+        return {'results': [], 'lookback_days': lookback_days, 'query_succeeded': False}
 
     def get_event_history(self, rows: int = 5000, lookback_days: int = 60) -> Dict:
         """Fetch the complete event history for the configured analysis window."""
@@ -545,7 +532,7 @@ class EnforcementReadinessCollector:
             if isinstance(computer, dict) and computer.get('id') is not None
         ]
         event_history = self.event.get_event_history(rows=self.max_rows, lookback_days=self.lookback_days)
-        all_catalog_files = self.file_catalog.collect(rows=self.max_rows)
+        all_catalog_files = self.file_catalog.get_all(rows=self.max_rows)
         all_catalog_rows = all_catalog_files if isinstance(all_catalog_files, list) else []
         trust_signals = {
             'catalog_files': all_catalog_rows,

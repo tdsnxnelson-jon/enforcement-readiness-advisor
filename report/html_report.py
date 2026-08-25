@@ -2100,10 +2100,9 @@ def _render_certificate_portfolio(data: Dict) -> str:
     certs = cert_analysis.get('top_certificates', [])
     coverage_gaps = cert_analysis.get('coverage_gaps', [])
     platform_reviews = cert_analysis.get('platform_reviews', [])
-    review_text = '; '.join(
-        f"{item.get('platform_scope', ['Unknown'])[0]} evidence requires endpoint, signer, certificate, and publisher review before approval."
-        for item in platform_reviews
-    )
+    # platform_reviews is already summarized to one entry per platform (see main.py);
+    # just join those summaries rather than re-deriving text per item.
+    review_text = '; '.join(item.get('review', '') for item in platform_reviews if item.get('review'))
     rows = "".join(f"""
         <tr>
             <td>{_e(c.get('certificate_id', ''))}</td>
