@@ -68,6 +68,7 @@ Config precedence is:
 | `--html` | `false` | Force HTML report generation (overrides config) |
 | `--acceleration-mode` | `conservative` | `conservative` (stricter thresholds) or `accelerated` (faster readiness lift) |
 | `--max-rows` | `0` (no cap, fetch full dataset) | Set a positive value to cap collection at a partial sample |
+| `--max-workers` | `4` | Concurrent requests when paginating large endpoints; raise for faster collection, lower to reduce load on the App Control server |
 | `--verify-ssl` | `false` | Verify SSL certificates |
 | `--insecure` | `false` | Disable SSL verification (overrides config) |
 

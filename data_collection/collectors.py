@@ -255,7 +255,9 @@ class EventCollector(BaseCollector):
                 seen_pages = set()
                 start = 0
                 while True:
-                    params = {'offset': start}
+                    # sort=id ASC pins pagination to a stable field so events
+                    # created/received mid-fetch can't shift rows between pages.
+                    params = {'offset': start, 'sort': 'id ASC'}
                     if filters:
                         params['filter'] = ';'.join(filters)
                     page = self.api_client.get(self.endpoint, params=params, rows=page_size)

@@ -768,6 +768,7 @@ def resolve_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
         'no_html': _as_bool(_resolve_value(args.no_html, cfg.get('no_html'), False), False),
         'acceleration_mode': _resolve_value(args.acceleration_mode, cfg.get('acceleration_mode'), 'conservative'),
         'max_rows': _as_int(_resolve_value(args.max_rows, cfg.get('max_rows'), 0), 0),
+        'max_workers': _as_int(_resolve_value(args.max_workers, cfg.get('max_workers'), 4), 4),
         'verify_ssl': _as_bool(_resolve_value(args.verify_ssl, cfg.get('verify_ssl'), False), False),
         'config_path': args.config,
         'rapid_config': {
@@ -1426,6 +1427,13 @@ def parse_args():
         help='Maximum rows to fetch per collection (default: 0 = no cap, fetch the full dataset). '
              'Set a positive value to cap collection and analyze a partial sample instead.'
     )
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=None,
+        help='Max concurrent requests when paginating large endpoints (default: 4). '
+             'Higher values fetch faster but put more load on the App Control server.'
+    )
     return parser.parse_args()
 
 
@@ -1440,7 +1448,10 @@ def main():
     
     # Step 1: Initialize API client
     logger.info("\n[1/4] Connecting to CB App Control server...")
-    api_client = CBApiClient(settings['server'], settings['token'], settings['verify_ssl'])
+    api_client = CBApiClient(
+        settings['server'], settings['token'], settings['verify_ssl'],
+        max_workers=settings['max_workers'],
+    )
     
     if not api_client.test_connection():
         logger.error("Failed to connect to CB App Control server")
@@ -1794,6 +1805,7 @@ def main():
         'server': settings['server'],
         'collection_metadata': {
             'max_rows': settings['max_rows'],
+            'max_workers': settings['max_workers'],
             'catalog_total': trust_signals.get('catalog_total', 'unknown'),
             'catalog_sampled': trust_signals.get('catalog_sampled', False),
             'event_backed_files_added': len(event_file_rows),

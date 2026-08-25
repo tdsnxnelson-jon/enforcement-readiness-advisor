@@ -7,6 +7,7 @@
   "no_html": false,
   "acceleration_mode": "conservative",
   "max_rows": 0,
+  "max_workers": 4,
   "rapid_config": {
     "excluded_configs": [
       "Example Linux Baseline",
