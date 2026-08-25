@@ -9,6 +9,17 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _has_identifiable_certificate(cert_info: Dict[str, Any]) -> bool:
+    """A certificate is only a usable trust anchor if it has a real subject and thumbprint.
+
+    Some certificate records (e.g. macOS embedded-signer placeholders) carry a valid-signature
+    flag but no subject or thumbprint, so there's nothing to scope an approval or trust score to.
+    """
+    subject = str(cert_info.get('subjectName') or cert_info.get('subject') or '').strip()
+    thumbprint = str(cert_info.get('thumbprint') or '').strip()
+    return bool(subject) and subject.lower() != 'unknown' and bool(thumbprint) and thumbprint.lower() != 'n/a'
+
+
 @dataclass
 class TrustSignal:
     """Represents a single trust signal."""
@@ -594,14 +605,16 @@ class TrustSignalAnalyzer:
         publisher_groups = {}  # For files with publishers but no certs
         
         for binary in binaries:
-            if binary.certificate_id and binary.certificate_id in cert_lookup:
+            has_cert = bool(binary.certificate_id) and binary.certificate_id in cert_lookup
+            if has_cert and _has_identifiable_certificate(cert_lookup[binary.certificate_id]):
                 # Group by certificate
                 cert_id = binary.certificate_id
                 if cert_id not in cert_groups:
                     cert_groups[cert_id] = []
                 cert_groups[cert_id].append(binary)
-            elif binary.publisher and binary.publisher != 'null':
-                # Group by actual publisher
+            elif not has_cert and binary.publisher and binary.publisher != 'null':
+                # Group by actual publisher (only when there is no certificate at all;
+                # certs with no subject/thumbprint provide nothing to bulk-approve on).
                 pub = binary.publisher
                 if pub not in publisher_groups:
                     publisher_groups[pub] = []
@@ -979,34 +992,53 @@ class TrustSignalAnalyzer:
             return 'BLOCKED'
         return 'UNKNOWN'
     
-    def analyze_certificate_trust(self, valid_data: Dict, 
-                                  invalid_data: Dict) -> Dict:
+    def analyze_certificate_trust(self, approved_files: Any, certificates: Any) -> Dict:
         """
-        Analyze certificate trust.
-        
+        Analyze certificate trust quality of files the organization has already approved.
+
+        This intentionally does NOT score the raw valid/invalid ratio across the whole
+        certificate catalog: that ratio trends toward 100% in any environment simply
+        because most OS-signed binaries are cryptographically valid, regardless of
+        whether anyone has reviewed them. Instead this measures, among files your org
+        has already approved, how many rest on a certificate that is both valid and
+        identifiable (has a real subject and thumbprint) versus approved on weaker
+        certificate evidence.
+
         Args:
-            valid_data: Response with valid certificates
-            invalid_data: Response with invalid certificates
-            
+            approved_files: File catalog rows already approved (effectiveState == 'Approved')
+            certificates: Full certificate catalog (id, valid/hasValidSignature, subject, thumbprint)
+
         Returns:
             Certificate trust analysis
         """
-        # Handle both list and dict responses
-        if isinstance(valid_data, list):
-            valid_results = valid_data
-        else:
-            valid_results = valid_data.get('results', valid_data.get('rows', []))
-            
-        if isinstance(invalid_data, list):
-            invalid_results = invalid_data
-        else:
-            invalid_results = invalid_data.get('results', invalid_data.get('rows', []))
-        
+        if isinstance(approved_files, dict):
+            approved_files = approved_files.get('results', approved_files.get('rows', []))
+        if isinstance(certificates, dict):
+            certificates = certificates.get('results', certificates.get('rows', []))
+
+        cert_by_id = {cert.get('id'): cert for cert in (certificates or []) if cert.get('id') is not None}
+
+        valid_signers = []
+        invalid_signers = []
+        for file_row in approved_files or []:
+            cert_id = file_row.get('certificateId')
+            if not cert_id:
+                continue
+            cert = cert_by_id.get(cert_id)
+            if not cert:
+                continue
+            subject = cert.get('subject') or cert.get('subjectName')
+            is_valid = bool(cert.get('valid', cert.get('hasValidSignature', False)))
+            if is_valid and _has_identifiable_certificate(cert):
+                valid_signers.append(subject)
+            else:
+                invalid_signers.append(subject)
+
         return {
-            'valid_count': len(valid_results),
-            'invalid_count': len(invalid_results),
-            'valid_signers': [c.get('subject') for c in valid_results],
-            'invalid_signers': [c.get('subject') for c in invalid_results]
+            'valid_count': len(valid_signers),
+            'invalid_count': len(invalid_signers),
+            'valid_signers': valid_signers,
+            'invalid_signers': invalid_signers
         }
     
     def analyze_prevalence(self, data: Dict) -> Dict:

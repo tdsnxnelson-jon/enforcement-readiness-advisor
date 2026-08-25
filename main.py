@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_collection.api_client import CBApiClient
 from data_collection.collectors import EnforcementReadinessCollector
-from analysis.trust_signals import TrustSignalAnalyzer, EnforcementReadinessScorer
+from analysis.trust_signals import TrustSignalAnalyzer, EnforcementReadinessScorer, _has_identifiable_certificate
 from analysis.path_analysis import PathClassifier, InstallerLineageAnalyzer
 from analysis.approval_workflow import ApprovalWorkflowAnalyzer
 from analysis.strategic_recommendations import StrategicRecommendationEngine
@@ -506,10 +506,12 @@ def _platform_evidence_reviews(
     file_decisions: List[Dict[str, Any]],
     binaries: List[Any],
     catalog_rows: Optional[List[Dict[str, Any]]] = None,
+    certificates: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Create itemized, non-approval review entries for macOS/Linux evidence."""
     binary_by_id = {str(binary.file_id): binary for binary in binaries}
     catalog_by_id = {str(row.get('id')): row for row in (catalog_rows or []) if row.get('id') is not None}
+    cert_by_id = {str(row.get('id')): row for row in (certificates or []) if row.get('id') is not None}
     reviews = []
     for decision in file_decisions:
         platform = _candidate_platform({'file_path': decision.get('file_path')})
@@ -520,7 +522,17 @@ def _platform_evidence_reviews(
         publisher_value = (catalog or {}).get('company') or (catalog or {}).get('publisherOrCompany') or (catalog or {}).get('publisher')
         certificate_value = (catalog or {}).get('certificateId')
         publisher = str(publisher_value) if publisher_value else 'Unknown; publisher metadata was not returned by the event/catalog response'
-        if certificate_value:
+        cert_record = cert_by_id.get(str(certificate_value)) if certificate_value else None
+        cert_identifiable = bool(cert_record) and _has_identifiable_certificate(cert_record)
+        if certificate_value and not cert_identifiable:
+            certificate = f'Certificate ID {certificate_value} (no subject or thumbprint on record)'
+            certificate_status = (
+                f'Certificate ID {certificate_value} has no identifiable subject or thumbprint, so it is not a '
+                'verifiable vendor certificate. Do not create a certificate-approval rule from this ID. The linked '
+                f"publisher label ('{publisher}') is likely a generic signing bucket shared by many unrelated files, "
+                'not a specific vendor; do not bulk-trust this publisher name.'
+            )
+        elif certificate_value:
             certificate = f'Certificate ID {certificate_value}'
             certificate_status = 'Certificate associated; validate signature and trust chain'
         elif catalog is not None and 'certificateId' in catalog:
@@ -538,62 +550,35 @@ def _platform_evidence_reviews(
             f"{trust_status}. Publisher status: {publisher}. Certificate status: {certificate}. "
             f"Current workflow decision: {decision.get('decision', 'UNKNOWN')}."
         )
-        reviews.extend([
-            {
-                'type': 'platform_file_review',
-                'target': file_name,
-                'platform_scope': [platform],
-                'endpoint': endpoint,
-                'file_path': file_path,
-                'publisher': publisher,
-                'certificate': certificate,
-                'files_to_approve': 0,
-                'readiness_gain_percent': 0.0,
-                'confidence_percent': 0.0,
-                'priority': 'review',
-                'review_only': True,
-                'rationale': details + f' {certificate_status} Resolve the evidence gap before selecting an approval action.'
-            },
-            {
-                'type': 'file_creation_rule_review',
-                'target': file_name,
-                'platform_scope': [platform],
-                'endpoint': endpoint,
-                'file_path': file_path,
-                'files_to_approve': 0,
-                'readiness_gain_percent': 0.0,
-                'confidence_percent': 0.0,
-                'priority': 'review',
-                'review_only': True,
-                'rationale': details + ' Review whether a narrowly scoped file-creation rule is appropriate; no rule is being recommended yet.'
-            },
-            {
-                'type': 'publisher_review',
-                'target': publisher,
-                'platform_scope': [platform],
-                'endpoint': endpoint,
-                'file_path': file_path,
-                'files_to_approve': 0,
-                'readiness_gain_percent': 0.0,
-                'confidence_percent': 0.0,
-                'priority': 'review',
-                'review_only': True,
-                'rationale': details + ' Review publisher identity and scope before considering publisher approval.'
-            },
-            {
-                'type': 'certificate_review',
-                'target': certificate,
-                'platform_scope': [platform],
-                'endpoint': endpoint,
-                'file_path': file_path,
-                'files_to_approve': 0,
-                'readiness_gain_percent': 0.0,
-                'confidence_percent': 0.0,
-                'priority': 'review',
-                'review_only': True,
-                'rationale': details + f' {certificate_status}. Review certificate identity, validity, and scope before considering certificate approval.'
-            },
-        ])
+        # One consolidated row per file (endpoint/publisher/certificate/rule evidence
+        # merged) instead of 4 near-duplicate rows for the same underlying file.
+        if cert_identifiable or not certificate_value:
+            closing = (
+                'Review publisher identity and scope before considering publisher approval. '
+                'Review certificate identity, validity, and scope before considering certificate approval. '
+                'Review whether a narrowly scoped file-creation rule is appropriate; no rule is being recommended yet.'
+            )
+        else:
+            closing = (
+                'This certificate and publisher label cannot anchor a safe approval; if this file needs to be '
+                'trusted, scope a rule to the file hash/path instead of the certificate or publisher name. '
+                'Review whether a narrowly scoped file-creation rule is appropriate; no rule is being recommended yet.'
+            )
+        reviews.append({
+            'type': 'platform_file_review',
+            'target': file_name,
+            'platform_scope': [platform],
+            'endpoint': endpoint,
+            'file_path': file_path,
+            'publisher': publisher,
+            'certificate': certificate,
+            'files_to_approve': 1,
+            'readiness_gain_percent': 0.0,
+            'confidence_percent': 0.0,
+            'priority': 'review',
+            'review_only': True,
+            'rationale': f'{details} {certificate_status} Resolve the evidence gap before selecting an approval action. {closing}',
+        })
     return reviews
 
 
@@ -1130,6 +1115,58 @@ def build_rapid_config_readiness_score(rapid_config_analysis: Dict[str, Any]) ->
     return round(max(0.0, min(100.0, score)), 1)
 
 
+def build_backlog_snapshot(
+    output_path: str,
+    summary: Dict[str, Any],
+    platform_review_count: int,
+) -> Dict[str, Any]:
+    """Surface absolute backlog size/growth, since the 0-100 score is a ratio and
+    can stay flat even when the raw amount of work remaining grows sharply."""
+    unknown_count = int(summary.get('unknown_count', 0) or 0)
+    approved_count = int(summary.get('approved_count', 0) or 0)
+    total = unknown_count + approved_count
+    unknown_percent = round((unknown_count / total) * 100.0, 1) if total else 0.0
+
+    previous_run = None
+    try:
+        if output_path and os.path.exists(output_path):
+            with open(output_path, 'r', encoding='utf-8') as fh:
+                previous_report = json.load(fh)
+            prev_summary = previous_report.get('summary', {}) if isinstance(previous_report, dict) else {}
+            prev_unknown = int(prev_summary.get('unknown_count', 0) or 0)
+            prev_approved = int(prev_summary.get('approved_count', 0) or 0)
+            prev_total = prev_unknown + prev_approved
+            previous_run = {
+                'timestamp': previous_report.get('timestamp'),
+                'unknown_count': prev_unknown,
+                'approved_count': prev_approved,
+                'unknown_percent': round((prev_unknown / prev_total) * 100.0, 1) if prev_total else 0.0,
+                'platform_evidence_review_count': (
+                    previous_report.get('backlog_snapshot', {}).get('platform_evidence_review_count')
+                    if isinstance(previous_report, dict) else None
+                ),
+            }
+    except Exception as exc:
+        logger.warning(f"Could not read previous report for backlog comparison: {exc}")
+
+    return {
+        'unknown_count': unknown_count,
+        'approved_count': approved_count,
+        'unknown_percent': unknown_percent,
+        'platform_evidence_review_count': platform_review_count,
+        'previous_run': previous_run,
+        'unknown_count_delta': (unknown_count - previous_run['unknown_count']) if previous_run else None,
+        'unknown_percent_delta': (
+            round(unknown_percent - previous_run['unknown_percent'], 1) if previous_run else None
+        ),
+        'platform_evidence_review_count_delta': (
+            platform_review_count - previous_run['platform_evidence_review_count']
+            if previous_run and previous_run.get('platform_evidence_review_count') is not None
+            else None
+        ),
+    }
+
+
 def _recommendation_from_percent(score_percent: float) -> str:
     if score_percent >= 80.0:
         return 'READY_FOR_HIGH_ENFORCEMENT'
@@ -1591,10 +1628,11 @@ def main():
         summary
     )
     
-    # Analyze certificate trust
+    # Analyze certificate trust of files already approved (not the raw catalog-wide
+    # valid/invalid ratio, which trends toward 100% regardless of review status).
     certificate_analysis = analyzer.analyze_certificate_trust(
-        trust_signals.get('valid_certificates', {}),
-        trust_signals.get('invalid_certificates', {})
+        trust_signals.get('approved_binaries', []),
+        trust_signals.get('all_certificates', trust_signals.get('valid_certificates', {})),
     )
     
     # Analyze prevalence
@@ -1623,6 +1661,12 @@ def main():
         workflow_file_decisions,
         trust_signals.get('all_events', trust_signals.get('new_unapproved_events', {})),
         trust_signals.get('software_rules', {})
+    )
+    platform_reviews = _platform_evidence_reviews(
+        workflow_file_decisions,
+        unknown_analysis,
+        all_catalog_rows,
+        _extract_rows(trust_signals.get('all_certificates', {})),
     )
 
     readiness = scorer.calculate_readiness_score(summary, detailed_analysis)
@@ -1660,7 +1704,6 @@ def main():
         workflow_rule_suggestions['candidates'] = _balance_recommendations(enriched_rule_candidates, 50)
 
     rule_list = workflow_rule_suggestions.get('recommended_rules', workflow_rule_suggestions.get('candidates', []))
-    platform_reviews = _platform_evidence_reviews(workflow_file_decisions, unknown_analysis, all_catalog_rows)
     rule_list.extend({
         'rule_type': 'Platform Evidence Review',
         'rule_name': review['target'],
@@ -1736,13 +1779,10 @@ def main():
     certificate_portfolio_analysis['top_certificates'] = _balance_recommendations(
         certificate_portfolio_analysis.get('top_certificates', []), 10
     )
-    # platform_reviews has up to 4 itemized entries per file (file/rule/publisher/
-    # certificate); summarize to one line per platform instead of dumping every
-    # per-file entry into a single wall-of-text paragraph.
+    # platform_reviews now has one consolidated entry per file; summarize to one
+    # line per platform instead of dumping every per-file entry into a paragraph.
     platform_review_file_counts: Dict[str, int] = {}
     for review in platform_reviews:
-        if review.get('type') != 'platform_file_review':
-            continue
         platform = review['platform_scope'][0]
         platform_review_file_counts[platform] = platform_review_file_counts.get(platform, 0) + 1
     certificate_portfolio_analysis['platform_reviews'] = [
@@ -1855,6 +1895,7 @@ def main():
             ]),
         },
         'readiness_score': readiness,
+        'backlog_snapshot': build_backlog_snapshot(settings['output'], summary, len(platform_reviews)),
         'summary': summary,
         'rapid_config_summary': {
             'enabled_relevant_percent': rapid_config_analysis.get('summary', {}).get('enabled_relevant_percent', 0.0),

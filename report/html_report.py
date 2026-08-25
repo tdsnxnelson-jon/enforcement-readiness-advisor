@@ -35,9 +35,10 @@ _SCORE_META = {
     "certificate_trust": {
         "label": "Certificate Validity",
         "explain": (
-            "Measures how many files carry digitally signed certificates that are "
-            "currently valid. Signed files are lower risk and are strong candidates "
-            "for auto-approval."
+            "Measures how many already-approved files rest on a certificate that is both "
+            "cryptographically valid and identifiable (has a real subject and thumbprint), "
+            "versus approved on weaker certificate evidence. This is about the quality of "
+            "approvals already made, not the raw prevalence of signed files in the catalog."
         ),
     },
     "prevalence": {
@@ -116,13 +117,59 @@ def _render_sampling_banner(data: Dict) -> str:
         return ""
     total = meta.get("catalog_total", "?")
     cap = meta.get("max_rows", "?")
+    total_text = f"{total:,}" if isinstance(total, int) else _e(total)
+    cap_text = f"{cap:,}" if isinstance(cap, int) else _e(cap)
     return f"""
     <div class="banner banner-warning">
         &#9888; <strong>Partial Sample:</strong> The file catalog contains
-        <strong>{_e(total):,}</strong> unknown files but this report analysed only
-        the first <strong>{_e(cap):,}</strong>. Scores may not reflect the full
+        <strong>{total_text}</strong> unknown files but this report analysed only
+        the first <strong>{cap_text}</strong>. Scores may not reflect the full
         environment. Re-run with a higher <code>--max-rows</code> value for a
         complete assessment.
+    </div>"""
+
+
+def _render_backlog_snapshot_banner(data: Dict) -> str:
+    """Show absolute backlog size/growth next to the score.
+
+    The readiness score is a ratio and can stay flat even when the raw amount of
+    work remaining grows sharply (e.g. unknown and approved counts both grow at
+    similar rates). This banner surfaces the raw numbers so growth is visible
+    even when the percentage doesn't move.
+    """
+    snap = data.get("backlog_snapshot", {})
+    if not snap:
+        return ""
+    unknown = snap.get("unknown_count", 0)
+    unknown_pct = snap.get("unknown_percent", 0.0)
+    review_count = snap.get("platform_evidence_review_count", 0)
+    prev = snap.get("previous_run")
+
+    deltas = []
+    if prev:
+        unknown_delta = snap.get("unknown_count_delta")
+        pct_delta = snap.get("unknown_percent_delta")
+        review_delta = snap.get("platform_evidence_review_count_delta")
+        if unknown_delta is not None:
+            sign = "+" if unknown_delta >= 0 else ""
+            deltas.append(f"unknown files {sign}{unknown_delta:,} since last run")
+        if pct_delta is not None:
+            sign = "+" if pct_delta >= 0 else ""
+            deltas.append(f"unknown ratio {sign}{pct_delta:.1f} pts")
+        if review_delta is not None:
+            sign = "+" if review_delta >= 0 else ""
+            deltas.append(f"review backlog {sign}{review_delta:,} files")
+
+    delta_text = f" ({'; '.join(deltas)})" if deltas else " (no previous run to compare)"
+
+    return f"""
+    <div class="banner banner-info">
+        &#8505; <strong>Backlog Snapshot:</strong>
+        <strong>{int(unknown):,}</strong> files awaiting review
+        (<strong>{unknown_pct:.1f}%</strong> of catalog), including
+        <strong>{int(review_count):,}</strong> in the Platform Evidence Review queue{_e(delta_text)}.
+        The score below is a percentage of catalog reviewed &mdash; use these raw counts to
+        gauge how much absolute work remains, since the percentage can stay flat even as backlog grows.
     </div>"""
 
 
@@ -155,7 +202,7 @@ def _render_hero(data: Dict) -> str:
     return f"""
     <div class="hero">
         <div class="hero-score" style="color:{colour}">{score:.0f}<span class="hero-pct">%</span></div>
-        <div class="hero-label">Enforcement Readiness Score <span class="tip" data-tooltip="Weighted composite of five dimensions: Unknown File Reduction, Publisher Trust Coverage, Certificate Validity, File Prevalence Pattern, and Endpoint Coverage. Each dimension contributes equally to the 0–100 total.">i</span></div>
+        <div class="hero-label">Enforcement Readiness Score <span class="tip" data-tooltip="Weighted composite of the dimensions shown in Score Breakdown below, including Rapid Config Readiness. Each dimension contributes equally to the 0–100 total.">i</span></div>
         <div class="hero-status {status_class}">{_e(status_text)}</div>
         <p class="hero-rec">{_e(rec_text)}</p>
         <p class="section-help">
@@ -786,9 +833,8 @@ def _render_rule_suggestions(data: Dict) -> str:
         <tr data-rule-type="{_e(c.get('rule_type', ''))}" data-expanded="false">
             <td class="expand-cell"><button class="expand-btn" onclick="toggleSafetyChecks(this)" aria-expanded="false" title="Toggle recommendation details">&gt;</button></td>
             <td>{_e(c.get('rule_type', ''))}</td>
-            <td>{_e(c.get('rule_name', ''))}</td>
+            <td class="path-cell">{_e(c.get('rule_name', ''))}</td>
             <td>{_e(c.get('process_pattern', ''))}</td>
-            <td class="path-cell">{_e(c.get('file_pattern', ''))}</td>
             <td>{_e(c.get('operation', ''))}</td>
             <td>{_badge(c.get('action', 'Approve').title(), 'info')}</td>
             <td>{int(c.get('confidence', 0) * 100)}%</td>
@@ -796,7 +842,7 @@ def _render_rule_suggestions(data: Dict) -> str:
             <td>{_e(c.get('source_event_count', 0))} files</td>
         </tr>
         <tr class="safety-checks-row" style="display: none;">
-            <td colspan="10">
+            <td colspan="9">
                 <div class="safety-checks">
                     <strong>Safety Checks:</strong>
                     <ul>{"".join(f"<li>{_e(check)}</li>" for check in c.get('safety_checks', []))}</ul>
@@ -848,12 +894,11 @@ def _render_rule_suggestions(data: Dict) -> str:
                             <th class="sortable-th" onclick="sortTable('rules-table', 1, 'text')">Rule Type <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('rules-table', 2, 'text')">Rule Name <span class="sort-indicator"></span></th>
                             <th class="sortable-th" onclick="sortTable('rules-table', 3, 'text')">Process <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">File Pattern <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Operation <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 6, 'text')">Action <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Confidence <span class="tip tip-below" data-tooltip="Rule confidence based on pattern consistency, digital signature data, and frequency of matched events. Higher values indicate stronger evidence the rule is safe to apply.">i</span> <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 8, 'number')">Gain <span class="tip tip-below" data-tooltip="Estimated percentage-point readiness gain if this rule reduces recurring unapproved activity. Based on source event count as a proxy for impacted files.">i</span> <span class="sort-indicator"></span></th>
-                            <th class="sortable-th" onclick="sortTable('rules-table', 9, 'number')">Files <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 4, 'text')">Operation <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 5, 'text')">Action <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 6, 'number')">Confidence <span class="tip tip-below" data-tooltip="Rule confidence based on pattern consistency, digital signature data, and frequency of matched events. Higher values indicate stronger evidence the rule is safe to apply.">i</span> <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 7, 'number')">Gain <span class="tip tip-below" data-tooltip="Estimated percentage-point readiness gain if this rule reduces recurring unapproved activity. Based on source event count as a proxy for impacted files.">i</span> <span class="sort-indicator"></span></th>
+                            <th class="sortable-th" onclick="sortTable('rules-table', 8, 'number')">Files <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
@@ -1288,6 +1333,9 @@ ul { padding-left: 20px; } li { margin: 4px 0; }
 .metric-desc  { font-size: 0.75rem; color: #6c757d; margin-top: 4px; line-height: 1.3; }
 .goal-banner { background: #fff3cd; border-left: 4px solid #fd7e14; padding: 10px 14px; border-radius: 4px; margin-bottom: 16px; font-size: 0.9rem; }
 .goal-met    { color: #155724; font-weight: 600; margin-bottom: 12px; }
+.banner { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9rem; line-height: 1.4; }
+.banner-warning { background: #fff3cd; border-left: 4px solid #fd7e14; }
+.banner-info { background: #e7f1ff; border-left: 4px solid #2b6cb0; }
 
 /* Badges */
 .badge { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
@@ -2448,7 +2496,11 @@ def _render_endpoint_readiness(data: Dict) -> str:
         </h2>
         <p class="section-help">
             <strong>Purpose:</strong> identify endpoint pilot candidates using observed unapproved/block event behavior. &nbsp;
-            <strong>How to use:</strong> start pilots with ready endpoints grouped by policy before broad rollout.
+            <strong>How to use:</strong> start pilots with ready endpoints grouped by policy before broad rollout. &nbsp;
+            <strong>Note:</strong> this score is independent of the top-level Enforcement Readiness Score &mdash; it
+            measures an endpoint's own recent unapproved/block activity, not catalog-wide trust signals, so it can
+            stay "Not Ready" even while the top-level score rises. Re-run after each round of approvals; this
+            score should trend toward Ready as your backlog shrinks across iterations.
         </p>
         <div id="endpoint-readiness-detail" class="collapsible">
             <div class="metric-grid" style="margin-bottom: 16px;">
@@ -2486,6 +2538,7 @@ def generate_html_report(data: Dict, output_path: str) -> None:
         ts_fmt = ts
 
     sampling_banner = _render_sampling_banner(data)
+    backlog_snapshot_banner = _render_backlog_snapshot_banner(data)
     hero = _render_hero(data)
     key_metrics = _render_key_metrics(data)
     score_audit = _render_score_audit(data)
@@ -2534,6 +2587,7 @@ def generate_html_report(data: Dict, output_path: str) -> None:
 
     body = "\n".join([
         sampling_banner,
+        backlog_snapshot_banner,
         hero,
         tabbed_report,
     ])
